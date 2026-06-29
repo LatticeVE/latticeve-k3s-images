@@ -39,7 +39,6 @@ start() {
 
     local token=$(mmds token) server=$(mmds server) cni=$(mmds cni) cb=$(mmds callback)
     local nn=$(mmds node_name) init=$(mmds init) tlssan=$(mmds tls_san)
-    local etcd_tmpfs=$(mmds etcd_tmpfs)
 
     # Hostname → meaningful k8s node name (default is "localhost" otherwise).
     if [ -n "$nn" ]; then hostname "$nn"; echo "$nn" > /etc/hostname; fi
@@ -60,19 +59,6 @@ start() {
     local sanargs=""; for s in $tlssan; do sanargs="$sanargs --tls-san $s"; done
 
     if [ "$role" = "server" ]; then
-        # Embedded etcd does heavy WAL fsync; under nested virtualisation each
-        # fsync traverses guest→host→hypervisor and stalls for seconds, so etcd
-        # can't keep up and HA quorum collapses (a joining member never syncs,
-        # taking the cluster down). Back just the etcd datastore dir with tmpfs to
-        # avoid that — but ONLY for HA clusters, where state is ephemeral per the
-        # design (a rebooted member re-syncs from its peers). A single control
-        # plane has no peers, so tmpfs there would wipe all cluster state on
-        # reboot; the controller omits etcd_tmpfs for cp_count=1, keeping its etcd
-        # disk-backed (durable). containerd/images always stay on the disk tree.
-        mkdir -p /var/lib/rancher/k3s/server/db
-        if [ "$etcd_tmpfs" = "1" ]; then
-            mount -t tmpfs -o size=768m tmpfs /var/lib/rancher/k3s/server/db 2>/dev/null || true
-        fi
         # First server initialises embedded etcd; additional servers join it.
         local mode=""
         if [ -n "$init" ]; then mode="--cluster-init"
