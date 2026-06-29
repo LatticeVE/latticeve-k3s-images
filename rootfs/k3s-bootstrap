@@ -52,7 +52,11 @@ start() {
     # ext4 filesystem. Online-resize root so containerd has the full disk. Capture
     # the real error on failure rather than swallowing it — an undersized root
     # otherwise only surfaces much later as containerd disk pressure.
-    if ! out=$(resize2fs /dev/vda 2>&1); then ewarn "resize2fs: $out"; fi
+    if command -v resize2fs >/dev/null 2>&1; then
+        if ! out=$(resize2fs /dev/vda 2>&1); then ewarn "resize2fs: $out"; fi
+    else
+        ewarn "resize2fs not found — root filesystem not grown (rebuild image to include e2fsprogs)"
+    fi
 
     ip route add 169.254.169.254/32 dev eth0 2>/dev/null || true
 
