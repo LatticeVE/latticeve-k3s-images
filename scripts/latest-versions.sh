@@ -1,8 +1,9 @@
 #!/bin/bash
 # Prints the latest known-good version for each upstream input this repo
-# builds against: k3s and the Alpine minirootfs. (The Firecracker guest kernel
-# is no longer built here — LatticeVE discovers it directly from Firecracker's
-# own CI bucket, since a kernel isn't actually coupled to a specific rootfs.)
+# builds against: k3s and the Alpine minirootfs. Also exposes fc_kernel_version()
+# to resolve the newest Firecracker-supported guest kernel — the kernel is built
+# by .github/workflows/build-kernel.yml against Firecracker's own CI config, so
+# we track the version set Firecracker actually publishes rather than kernel.org.
 #
 # Usage: ./scripts/latest-versions.sh [alpine-branch, e.g. v3.21]
 #
@@ -70,6 +71,40 @@ alpine_version() {
         return 1
     fi
     echo "$ver"
+}
+
+# --- Firecracker guest kernel: newest version with a published FC CI config --
+# Firecracker only boots kernels it ships a build config for (in its CI S3
+# bucket). Track that set rather than kernel.org so we (a) never build a kernel
+# Firecracker can't run, and (b) automatically pick up a new line — including a
+# new major like 7.x — the moment Firecracker starts publishing configs for it.
+# No manual version bumping required.
+fc_kernel_version() {
+    local arch="${1:-x86_64}"
+    local base="https://s3.amazonaws.com/spec.ccfc.min"
+    local dirs d vers
+    # Dated CI build dirs (firecracker-ci/YYYYMMDD-<hash>-0/), newest first.
+    dirs=$(curl -sSL "${base}/?list-type=2&prefix=firecracker-ci/&delimiter=/" \
+        | grep -o '<Prefix>firecracker-ci/[0-9]\{8\}-[^<]*</Prefix>' \
+        | sed 's|<Prefix>||;s|</Prefix>||' | sort -r)
+    if [ -z "$dirs" ]; then
+        echo "fc_kernel_version: no Firecracker CI build dirs found" >&2
+        return 1
+    fi
+    # Walk newest-first; return the highest kernel version (proper version sort)
+    # that has a vmlinux config for this arch.
+    for d in $dirs; do
+        vers=$(curl -sSL "${base}/?list-type=2&prefix=${d}${arch}/vmlinux-" \
+            | grep -oE 'vmlinux-[0-9]+(\.[0-9]+)+\.config' \
+            | sed -E 's/^vmlinux-(.*)\.config$/\1/' \
+            | sort -V)
+        if [ -n "$vers" ]; then
+            echo "$vers" | tail -1
+            return 0
+        fi
+    done
+    echo "fc_kernel_version: no vmlinux config found for arch $arch" >&2
+    return 1
 }
 
 # Allow sourcing this file (e.g. `source latest-versions.sh; alpine_version`)
