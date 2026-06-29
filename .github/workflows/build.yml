@@ -15,16 +15,17 @@ on:
         description: "Guest kernel version (e.g. 6.1.174)"
         required: true
         default: "6.1.174"
-      arch:
-        description: "Target arch"
-        required: true
-        default: "x86_64"
-        type: choice
-        options: ["x86_64", "aarch64"]
 
 jobs:
   rootfs:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Build k3s rootfs
@@ -32,17 +33,24 @@ jobs:
         env:
           K3S_VERSION: ${{ inputs.k3s_version }}
           ALPINE_VERSION: ${{ inputs.alpine_version }}
-          ARCH: ${{ inputs.arch }}
+          ARCH: ${{ matrix.arch }}
         run: sudo -E WORK="$PWD" ./build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: k3s-rootfs-${{ inputs.arch }}
+          name: k3s-rootfs-${{ matrix.arch }}
           path: |
-            rootfs/k3s-rootfs-${{ inputs.arch }}.ext4
-            rootfs/k3s-rootfs-${{ inputs.arch }}.ext4.meta
+            rootfs/k3s-rootfs-${{ matrix.arch }}.ext4
+            rootfs/k3s-rootfs-${{ matrix.arch }}.ext4.meta
 
   kernel:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Install build deps
@@ -51,14 +59,14 @@ jobs:
         working-directory: kernel
         env:
           KERNEL_VERSION: ${{ inputs.kernel_version }}
-          ARCH: ${{ inputs.arch }}
+          ARCH: ${{ matrix.arch }}
         run: WORK="$PWD" ./build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: vmlinux-${{ inputs.arch }}
+          name: vmlinux-${{ matrix.arch }}
           path: |
-            kernel/vmlinux-${{ inputs.kernel_version }}-${{ inputs.arch }}
-            kernel/vmlinux-${{ inputs.kernel_version }}-${{ inputs.arch }}.meta
+            kernel/vmlinux-${{ inputs.kernel_version }}-${{ matrix.arch }}
+            kernel/vmlinux-${{ inputs.kernel_version }}-${{ matrix.arch }}.meta
 
   release:
     needs: [rootfs, kernel]
@@ -72,7 +80,7 @@ jobs:
           merge-multiple: true
       - name: Tag
         id: tag
-        run: echo "tag=k3s-${{ inputs.k3s_version }}-kernel-${{ inputs.kernel_version }}-${{ inputs.arch }}-$(date +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+        run: echo "tag=k3s-${{ inputs.k3s_version }}-kernel-${{ inputs.kernel_version }}-$(date +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}

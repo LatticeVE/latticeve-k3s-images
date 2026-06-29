@@ -28,9 +28,15 @@ if [ ! -f mini.tar.gz ]; then
     wget -qO mini.tar.gz \
         "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/releases/$ARCH/alpine-minirootfs-$ALPINE_VERSION-$ARCH.tar.gz"
 fi
+# k3s names its release asset per-arch: "k3s" for amd64, "k3s-arm64" for arm64.
+case "$ARCH" in
+  x86_64)  K3S_ASSET="k3s" ;;
+  aarch64) K3S_ASSET="k3s-arm64" ;;
+  *) echo "unsupported ARCH for k3s asset: $ARCH" >&2; exit 1 ;;
+esac
 if [ ! -f k3s ]; then
-    echo "downloading k3s $K3S_VERSION"
-    wget -qO k3s "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
+    echo "downloading k3s $K3S_VERSION ($K3S_ASSET)"
+    wget -qO k3s "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/$K3S_ASSET"
     chmod +x k3s
 fi
 

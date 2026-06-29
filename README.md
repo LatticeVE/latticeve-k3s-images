@@ -19,9 +19,17 @@ cd kernel && KERNEL_VERSION=6.1.174 ./build.sh
 ## CI
 
 `.github/workflows/build.yml` is a `workflow_dispatch` job: pick a k3s version,
-Alpine version, kernel version, and arch, and it builds both artifacts and
-publishes them as a GitHub Release (rootfs `.ext4` + kernel `vmlinux`, each
-with a `.meta` sidecar recording the versions baked in).
+Alpine version, and kernel version, and it builds both artifacts for **both
+x86_64 and aarch64** and publishes them as a GitHub Release (rootfs `.ext4` +
+kernel `vmlinux` per arch, each with a `.meta` sidecar recording the versions
+baked in).
+
+Each arch builds natively — x86_64 on `ubuntu-latest`, aarch64 on GitHub's
+hosted arm64 runner (`ubuntu-24.04-arm`) — rather than cross-compiling/
+cross-chrooting from x86_64, since `chroot`-ing into an aarch64 rootfs or
+building an aarch64 kernel from an x86_64 host needs QEMU user-mode emulation
+or a cross toolchain otherwise. `ubuntu-24.04-arm` is free for public repos;
+private repos need a paid arm64 runner.
 
 LatticeVE's kernel catalog and (planned) rootfs image catalog can point at
 these release URLs the same way the existing Firecracker CI kernel catalog
