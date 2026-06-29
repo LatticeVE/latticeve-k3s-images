@@ -146,8 +146,9 @@ jobs:
           # doesn't support loadable modules and the rootfs has no /lib/modules).
           JOBS="$(nproc)"
           if [ "$ARCH" = "x86_64" ]; then
-            make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" bzImage
-            cp arch/x86/boot/bzImage "../vmlinuz-latticeve-k3s-${KERNEL_VERSION}-${{ matrix.goarch }}"
+            # Firecracker requires an uncompressed ELF vmlinux, not bzImage.
+            make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" vmlinux
+            cp vmlinux "../vmlinuz-latticeve-k3s-${KERNEL_VERSION}-${{ matrix.goarch }}"
           else
             make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" Image
             cp arch/arm64/boot/Image "../vmlinuz-latticeve-k3s-${KERNEL_VERSION}-${{ matrix.goarch }}"
