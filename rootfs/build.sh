@@ -14,7 +14,7 @@ ALPINE_BRANCH="${ALPINE_BRANCH:-v3.21}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.21.7}"
 K3S_VERSION="${K3S_VERSION:-v1.31.5+k3s1}"
 ARCH="${ARCH:-x86_64}"
-ROOTFS_SIZE="${ROOTFS_SIZE:-3G}"
+ROOTFS_SIZE="${ROOTFS_SIZE:-256M}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${WORK:-$(pwd)}"
@@ -61,7 +61,7 @@ sed -i '/^tty[1-6]/d' "$R/etc/inittab"
 
 chroot "$R" /bin/sh -c '
   set -e
-  apk add --no-cache openrc iproute2 >/dev/null 2>&1
+  apk add --no-cache openrc iproute2 e2fsprogs >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
   # -> k3s fatals "unhandled cgroup mode". Populate them explicitly.
   for s in devfs dmesg sysfs cgroups hwdrivers; do rc-update add $s sysinit; done

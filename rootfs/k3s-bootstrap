@@ -19,6 +19,15 @@ mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
 
 start() {
     ebegin "LatticeVE k3s bootstrap"
+
+    # The base rootfs image is built small (just enough for Alpine+k3s); the
+    # controller truncates the raw disk file up to the provisioned disk size
+    # before boot, but truncate alone doesn't grow the ext4 filesystem itself.
+    # Online-resize root to fill whatever the host actually gave us, so
+    # containerd has the full provisioned disk for images/logs, not just the
+    # image's original on-disk size.
+    resize2fs /dev/vda 2>/dev/null || true
+
     ip route add 169.254.169.254/32 dev eth0 2>/dev/null || true
 
     local role="" i=0
