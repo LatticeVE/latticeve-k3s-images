@@ -10,14 +10,18 @@
 set -euo pipefail
 
 KERNEL_VERSION="${KERNEL_VERSION:-6.1.174}"
+# ARCH follows uname convention (x86_64, aarch64) since that's what
+# cdn.kernel.org and Firecracker's guest_configs naming use. The output
+# filename uses the Docker/Go convention (amd64, arm64) instead, matching
+# LatticeVE's other artifacts.
 ARCH="${ARCH:-x86_64}"
 KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 # Firecracker ships guest configs per kernel branch (e.g. microvm-kernel-ci-x86_64-6.1.config).
 CONFIG_BRANCH="${CONFIG_BRANCH:-$(echo "$KERNEL_VERSION" | cut -d. -f1,2)}"
 
 case "$ARCH" in
-  x86_64) FC_ARCH="x86_64"; KARCH="x86" ;;
-  aarch64) FC_ARCH="aarch64"; KARCH="arm64" ;;
+  x86_64) FC_ARCH="x86_64"; KARCH="x86"; GOARCH="amd64" ;;
+  aarch64) FC_ARCH="aarch64"; KARCH="arm64"; GOARCH="arm64" ;;
   *) echo "unsupported ARCH: $ARCH" >&2; exit 1 ;;
 esac
 
@@ -49,9 +53,9 @@ fi
 make ARCH="$KARCH" olddefconfig
 make ARCH="$KARCH" -j"$(nproc)" vmlinux
 
-OUT="../vmlinux-${KERNEL_VERSION}-${FC_ARCH}"
+OUT="../vmlinux-${KERNEL_VERSION}-${GOARCH}"
 cp vmlinux "$OUT"
 cd ..
 echo "=== built ==="; ls -la "$OUT"
 echo "kernel_version=$KERNEL_VERSION" > "${OUT}.meta"
-echo "arch=$FC_ARCH" >> "${OUT}.meta"
+echo "arch=$GOARCH" >> "${OUT}.meta"

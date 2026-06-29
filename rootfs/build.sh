@@ -4,8 +4,8 @@
 # from Firecracker MMDS at boot (see k3s-bootstrap, the OpenRC service alongside).
 #
 # Reproducible: downloads a pinned Alpine minirootfs + k3s binary (reusing local
-# copies if already present). Run on an x86_64 Linux host with root (needs
-# chroot + mke2fs). Produces ./k3s-rootfs-<arch>.ext4.
+# copies if already present). Run on a host of the matching arch with root
+# (needs chroot + mke2fs). Produces ./k3s-rootfs-<amd64|arm64>.ext4.
 #
 #   ALPINE_VERSION=3.21.7 K3S_VERSION=v1.31.5+k3s1 ./build.sh
 set -euo pipefail
@@ -13,14 +13,24 @@ set -euo pipefail
 ALPINE_BRANCH="${ALPINE_BRANCH:-v3.21}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.21.7}"
 K3S_VERSION="${K3S_VERSION:-v1.31.5+k3s1}"
+# ARCH follows uname/Alpine convention (x86_64, aarch64) since that's what
+# Alpine's download URLs and the chroot/mke2fs host both need. Output files
+# are named with the Docker/Go convention (amd64, arm64) instead, since
+# that's what LatticeVE and k3s's own release assets use.
 ARCH="${ARCH:-x86_64}"
 ROOTFS_SIZE="${ROOTFS_SIZE:-256M}"
+
+case "$ARCH" in
+  x86_64)  GOARCH="amd64" ;;
+  aarch64) GOARCH="arm64" ;;
+  *) echo "unsupported ARCH: $ARCH" >&2; exit 1 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${WORK:-$(pwd)}"
 cd "$WORK"
 R="rootfs"
-OUT="k3s-rootfs-${ARCH}.ext4"
+OUT="k3s-rootfs-${GOARCH}.ext4"
 
 # --- fetch inputs (reuse local copies if present) ---------------------------
 if [ ! -f mini.tar.gz ]; then
@@ -29,10 +39,9 @@ if [ ! -f mini.tar.gz ]; then
         "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/releases/$ARCH/alpine-minirootfs-$ALPINE_VERSION-$ARCH.tar.gz"
 fi
 # k3s names its release asset per-arch: "k3s" for amd64, "k3s-arm64" for arm64.
-case "$ARCH" in
-  x86_64)  K3S_ASSET="k3s" ;;
-  aarch64) K3S_ASSET="k3s-arm64" ;;
-  *) echo "unsupported ARCH for k3s asset: $ARCH" >&2; exit 1 ;;
+case "$GOARCH" in
+  amd64) K3S_ASSET="k3s" ;;
+  arm64) K3S_ASSET="k3s-arm64" ;;
 esac
 if [ ! -f k3s ]; then
     echo "downloading k3s $K3S_VERSION ($K3S_ASSET)"
@@ -84,4 +93,4 @@ echo "=== built ==="; ls -la "$OUT"
 echo "=== default runlevel ==="; ls "$R/etc/runlevels/default"
 echo "k3s_version=$K3S_VERSION" > "${OUT}.meta"
 echo "alpine_version=$ALPINE_VERSION" >> "${OUT}.meta"
-echo "arch=$ARCH" >> "${OUT}.meta"
+echo "arch=$GOARCH" >> "${OUT}.meta"
