@@ -84,7 +84,10 @@ sed -i '/^tty[1-6]/d' "$R/etc/inittab"
 
 chroot "$R" /bin/sh -c '
   set -e
-  apk add --no-cache openrc iproute2 e2fsprogs >/dev/null 2>&1
+  # ca-certificates provides the trust bundle + update-ca-certificates so the
+  # k3s-bootstrap service can verify TLS on the kubeconfig callback against the
+  # controller's published serving cert.
+  apk add --no-cache openrc iproute2 e2fsprogs ca-certificates >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
   # -> k3s fatals "unhandled cgroup mode". Populate them explicitly.
   for s in devfs dmesg sysfs cgroups hwdrivers; do rc-update add $s sysinit; done

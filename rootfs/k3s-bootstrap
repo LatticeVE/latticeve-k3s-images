@@ -39,6 +39,7 @@ start() {
 
     local token=$(mmds token) server=$(mmds server) cni=$(mmds cni) cb=$(mmds callback)
     local nn=$(mmds node_name) init=$(mmds init) tlssan=$(mmds tls_san)
+    local etcd_tmpfs=$(mmds etcd_tmpfs)
 
     # Hostname → meaningful k8s node name (default is "localhost" otherwise).
     if [ -n "$nn" ]; then hostname "$nn"; echo "$nn" > /etc/hostname; fi
@@ -62,11 +63,16 @@ start() {
         # Embedded etcd does heavy WAL fsync; under nested virtualisation each
         # fsync traverses guest→host→hypervisor and stalls for seconds, so etcd
         # can't keep up and HA quorum collapses (a joining member never syncs,
-        # taking the cluster down). Back just the etcd datastore dir with tmpfs.
-        # State is ephemeral per the HA design — a rebooted member re-syncs from
-        # its peers. containerd/images stay on the (disk-backed) rest of the tree.
+        # taking the cluster down). Back just the etcd datastore dir with tmpfs to
+        # avoid that — but ONLY for HA clusters, where state is ephemeral per the
+        # design (a rebooted member re-syncs from its peers). A single control
+        # plane has no peers, so tmpfs there would wipe all cluster state on
+        # reboot; the controller omits etcd_tmpfs for cp_count=1, keeping its etcd
+        # disk-backed (durable). containerd/images always stay on the disk tree.
         mkdir -p /var/lib/rancher/k3s/server/db
-        mount -t tmpfs -o size=768m tmpfs /var/lib/rancher/k3s/server/db 2>/dev/null || true
+        if [ "$etcd_tmpfs" = "1" ]; then
+            mount -t tmpfs -o size=768m tmpfs /var/lib/rancher/k3s/server/db 2>/dev/null || true
+        fi
         # First server initialises embedded etcd; additional servers join it.
         local mode=""
         if [ -n "$init" ]; then mode="--cluster-init"
@@ -75,10 +81,23 @@ start() {
         /usr/local/bin/k3s server $mode --token "$token" --write-kubeconfig-mode 644 \
             $fb $nnarg $sanargs >/var/log/k3s.log 2>&1 &
         # Phone the kubeconfig home (controller patches the endpoint + stores it).
+        # The kubeconfig carries cluster-admin creds, so verify the callback's TLS
+        # against the controller's published serving cert (callback_ca) rather than
+        # skipping the check. Fall back to --no-check-certificate only if no cert
+        # was published (older controller), preserving backward compatibility.
         if [ -n "$cb" ]; then
+          local wget_tls="--no-check-certificate"
+          local cca=$(mmds callback_ca)
+          if [ -n "$cca" ]; then
+            mkdir -p /usr/local/share/ca-certificates
+            if echo "$cca" | base64 -d > /usr/local/share/ca-certificates/lattice-controller.crt 2>/dev/null \
+               && update-ca-certificates >/dev/null 2>&1; then
+              wget_tls=""
+            fi
+          fi
           ( for j in $(seq 1 120); do
               [ -f /etc/rancher/k3s/k3s.yaml ] && \
-                wget -q --no-check-certificate --header="X-Cluster-Token: $token" \
+                wget -q $wget_tls --header="X-Cluster-Token: $token" \
                   --post-file=/etc/rancher/k3s/k3s.yaml -O- "$cb" >/dev/null 2>&1 && break
               sleep 5
             done ) &
