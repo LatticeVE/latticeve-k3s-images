@@ -1,0 +1,80 @@
+name: build-images
+
+on:
+  workflow_dispatch:
+    inputs:
+      k3s_version:
+        description: "k3s version (e.g. v1.31.5+k3s1)"
+        required: true
+        default: "v1.31.5+k3s1"
+      alpine_version:
+        description: "Alpine minirootfs version (e.g. 3.21.7)"
+        required: true
+        default: "3.21.7"
+      kernel_version:
+        description: "Guest kernel version (e.g. 6.1.128)"
+        required: true
+        default: "6.1.128"
+      arch:
+        description: "Target arch"
+        required: true
+        default: "x86_64"
+        type: choice
+        options: ["x86_64", "aarch64"]
+
+jobs:
+  rootfs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build k3s rootfs
+        working-directory: rootfs
+        env:
+          K3S_VERSION: ${{ inputs.k3s_version }}
+          ALPINE_VERSION: ${{ inputs.alpine_version }}
+          ARCH: ${{ inputs.arch }}
+        run: sudo -E WORK="$PWD" ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k3s-rootfs-${{ inputs.arch }}
+          path: |
+            rootfs/k3s-rootfs-${{ inputs.arch }}.ext4
+            rootfs/k3s-rootfs-${{ inputs.arch }}.ext4.meta
+
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc flex bison libelf-dev libssl-dev
+      - name: Build guest kernel
+        working-directory: kernel
+        env:
+          KERNEL_VERSION: ${{ inputs.kernel_version }}
+          ARCH: ${{ inputs.arch }}
+        run: WORK="$PWD" ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vmlinux-${{ inputs.arch }}
+          path: |
+            kernel/vmlinux-${{ inputs.kernel_version }}-${{ inputs.arch }}
+            kernel/vmlinux-${{ inputs.kernel_version }}-${{ inputs.arch }}.meta
+
+  release:
+    needs: [rootfs, kernel]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Tag
+        id: tag
+        run: echo "tag=k3s-${{ inputs.k3s_version }}-kernel-${{ inputs.kernel_version }}-${{ inputs.arch }}-$(date +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          files: artifacts/*

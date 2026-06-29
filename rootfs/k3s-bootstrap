@@ -1,0 +1,81 @@
+#!/sbin/openrc-run
+# LatticeVE k3s bootstrap service (OpenRC). Reads its per-node configuration from
+# the Firecracker Metadata Service (MMDS, V1 @ 169.254.169.254) which the
+# controller publishes pre/post-boot, then starts k3s in the right role.
+#
+# MMDS keys:
+#   role       "server" | "agent"
+#   token      cluster join token (also authenticates the kubeconfig callback)
+#   server     join URL (https://<ip>:6443) — for agents and joining servers
+#   init       "1" on the first control-plane node (embedded-etcd cluster-init)
+#   cni        CNI name ("flannel" default → host-gw; anything else → none)
+#   callback   controller URL the first server POSTs its kubeconfig to
+#   node_name  k8s node name (hostname)
+#   tls_san    space-separated extra TLS SANs (LB VIP, public IP) for the API cert
+description="LatticeVE k3s bootstrap (Firecracker MMDS)"
+depend() { need net; }
+
+mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
+
+start() {
+    ebegin "LatticeVE k3s bootstrap"
+    ip route add 169.254.169.254/32 dev eth0 2>/dev/null || true
+
+    local role="" i=0
+    while [ $i -lt 90 ]; do
+        role=$(mmds role); [ -n "$role" ] && break
+        sleep 2; i=$((i+1))
+    done
+    [ -z "$role" ] && { eend 1 "MMDS role unavailable"; return 1; }
+
+    local token=$(mmds token) server=$(mmds server) cni=$(mmds cni) cb=$(mmds callback)
+    local nn=$(mmds node_name) init=$(mmds init) tlssan=$(mmds tls_san)
+
+    # Hostname → meaningful k8s node name (default is "localhost" otherwise).
+    if [ -n "$nn" ]; then hostname "$nn"; echo "$nn" > /etc/hostname; fi
+
+    # Guarantee a working resolver: VPC gateway (dnsmasq) + public fallback.
+    # udhcpc does not reliably populate resolv.conf in this minimal rootfs.
+    local gw=$(ip route | awk '/default/{print $3; exit}')
+    { [ -n "$gw" ] && echo "nameserver $gw"; echo "nameserver 8.8.8.8"; } > /etc/resolv.conf
+
+    mkdir -p /etc/rancher/k3s /var/log
+
+    # flannel host-gw works over the (host-level) VXLAN overlay without an in-guest
+    # VXLAN module; any non-flannel CNI is left to the user (flannel disabled).
+    local fb="--flannel-backend=host-gw"
+    [ -n "$cni" ] && [ "$cni" != "flannel" ] && fb="--flannel-backend=none --disable-network-policy"
+
+    local nnarg=""; [ -n "$nn" ] && nnarg="--node-name $nn"
+    local sanargs=""; for s in $tlssan; do sanargs="$sanargs --tls-san $s"; done
+
+    if [ "$role" = "server" ]; then
+        # Embedded etcd does heavy WAL fsync; under nested virtualisation each
+        # fsync traverses guest→host→hypervisor and stalls for seconds, so etcd
+        # can't keep up and HA quorum collapses (a joining member never syncs,
+        # taking the cluster down). Back just the etcd datastore dir with tmpfs.
+        # State is ephemeral per the HA design — a rebooted member re-syncs from
+        # its peers. containerd/images stay on the (disk-backed) rest of the tree.
+        mkdir -p /var/lib/rancher/k3s/server/db
+        mount -t tmpfs -o size=768m tmpfs /var/lib/rancher/k3s/server/db 2>/dev/null || true
+        # First server initialises embedded etcd; additional servers join it.
+        local mode=""
+        if [ -n "$init" ]; then mode="--cluster-init"
+        elif [ -n "$server" ]; then mode="--server $server"
+        fi
+        /usr/local/bin/k3s server $mode --token "$token" --write-kubeconfig-mode 644 \
+            $fb $nnarg $sanargs >/var/log/k3s.log 2>&1 &
+        # Phone the kubeconfig home (controller patches the endpoint + stores it).
+        if [ -n "$cb" ]; then
+          ( for j in $(seq 1 120); do
+              [ -f /etc/rancher/k3s/k3s.yaml ] && \
+                wget -q --no-check-certificate --header="X-Cluster-Token: $token" \
+                  --post-file=/etc/rancher/k3s/k3s.yaml -O- "$cb" >/dev/null 2>&1 && break
+              sleep 5
+            done ) &
+        fi
+    else
+        /usr/local/bin/k3s agent --token "$token" --server "$server" $nnarg >/var/log/k3s.log 2>&1 &
+    fi
+    eend 0
+}

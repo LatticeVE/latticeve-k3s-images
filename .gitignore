@@ -1,0 +1,9 @@
+rootfs/rootfs/
+rootfs/*.tar.gz
+rootfs/k3s
+rootfs/*.ext4
+rootfs/*.ext4.meta
+kernel/linux-*/
+kernel/*.tar.xz
+kernel/vmlinux-*
+kernel/vmlinux-*.meta
