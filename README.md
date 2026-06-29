@@ -12,8 +12,8 @@ Builds the two artifacts LatticeVE's k3s-on-Firecracker provisioning needs:
 ## Building locally
 
 ```bash
-cd rootfs && K3S_VERSION=v1.31.5+k3s1 ALPINE_VERSION=3.21.7 sudo -E ./build.sh
-cd kernel && KERNEL_VERSION=6.1.128 ./build.sh
+cd rootfs && K3S_VERSION=v1.31.5+k3s1 ALPINE_VERSION=3.24.1 sudo -E ./build.sh
+cd kernel && KERNEL_VERSION=6.1.155 ./build.sh
 ```
 
 ## CI

@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       k3s_version:
-        description: "k3s version (e.g. v1.31.5+k3s1)"
+        description: "k3s version (e.g. v1.36.2+k3s1)"
         required: true
-        default: "v1.31.5+k3s1"
+        default: "v1.36.2+k3s1"
       alpine_version:
-        description: "Alpine minirootfs version (e.g. 3.21.7)"
+        description: "Alpine minirootfs version (e.g. 3.24.1)"
         required: true
-        default: "3.21.7"
+        default: "3.24.1"
       kernel_version:
-        description: "Guest kernel version (e.g. 6.1.128)"
+        description: "Guest kernel version (e.g. 6.1.155)"
         required: true
-        default: "6.1.128"
+        default: "6.1.155"
       arch:
         description: "Target arch"
         required: true
