@@ -6,10 +6,10 @@
 # Run on an x86_64 or aarch64 Linux host with build-essential/bc/flex/bison/
 # libelf-dev/libssl-dev installed.
 #
-#   KERNEL_VERSION=6.1.155 ARCH=x86_64 ./build.sh
+#   KERNEL_VERSION=6.1.174 ARCH=x86_64 ./build.sh
 set -euo pipefail
 
-KERNEL_VERSION="${KERNEL_VERSION:-6.1.155}"
+KERNEL_VERSION="${KERNEL_VERSION:-6.1.174}"
 ARCH="${ARCH:-x86_64}"
 KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 # Firecracker ships guest configs per kernel branch (e.g. microvm-kernel-ci-x86_64-6.1.config).

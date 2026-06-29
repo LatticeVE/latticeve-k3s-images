@@ -12,9 +12,9 @@ on:
         required: true
         default: "3.24.1"
       kernel_version:
-        description: "Guest kernel version (e.g. 6.1.155)"
+        description: "Guest kernel version (e.g. 6.1.174)"
         required: true
-        default: "6.1.155"
+        default: "6.1.174"
       arch:
         description: "Target arch"
         required: true

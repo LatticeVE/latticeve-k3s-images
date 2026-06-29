@@ -7,7 +7,7 @@
 # Output (one per line, suitable for `source`-ing or eval):
 #   K3S_VERSION=v1.31.5+k3s1
 #   ALPINE_VERSION=3.21.7
-#   KERNEL_VERSION=6.1.155
+#   KERNEL_VERSION=6.1.174
 #
 # Requires: curl, grep, sed — all POSIX-compatible (works with BSD grep on
 # macOS as well as GNU grep on Linux/CI). No jq dependency.
