@@ -10,6 +10,7 @@
 # Output (one per line, suitable for `source`-ing or eval):
 #   K3S_VERSION=v1.31.5+k3s1
 #   ALPINE_VERSION=3.21.7
+#   FC_KERNEL_VERSION=6.1.174
 #
 # Requires: curl, grep, sed, awk, paste — all POSIX-compatible (works with BSD
 # tools on macOS as well as GNU on Linux/CI). No jq dependency.
@@ -113,12 +114,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     set +e
     K3S_VERSION="$(k3s_version)"; k3s_rc=$?
     ALPINE_VERSION="$(alpine_version)"; alpine_rc=$?
+    FC_KERNEL_VERSION="$(fc_kernel_version x86_64)"; kernel_rc=$?
     set -e
 
     echo "K3S_VERSION=$K3S_VERSION"
     echo "ALPINE_VERSION=$ALPINE_VERSION"
+    echo "FC_KERNEL_VERSION=$FC_KERNEL_VERSION"
 
-    if [ "$k3s_rc" != 0 ] || [ "$alpine_rc" != 0 ]; then
+    if [ "$k3s_rc" != 0 ] || [ "$alpine_rc" != 0 ] || [ "$kernel_rc" != 0 ]; then
         exit 1
     fi
 fi
