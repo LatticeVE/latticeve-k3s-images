@@ -49,8 +49,10 @@ start() {
 
     # The base rootfs image is built small; the controller truncates the raw disk
     # up to the provisioned size before boot, but truncate alone doesn't grow the
-    # ext4 filesystem. Online-resize root so containerd has the full disk.
-    resize2fs /dev/vda 2>/dev/null || ewarn "resize2fs failed; disk may be undersized"
+    # ext4 filesystem. Online-resize root so containerd has the full disk. Capture
+    # the real error on failure rather than swallowing it — an undersized root
+    # otherwise only surfaces much later as containerd disk pressure.
+    if ! out=$(resize2fs /dev/vda 2>&1); then ewarn "resize2fs: $out"; fi
 
     ip route add 169.254.169.254/32 dev eth0 2>/dev/null || true
 

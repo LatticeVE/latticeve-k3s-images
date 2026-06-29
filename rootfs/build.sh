@@ -122,7 +122,11 @@ if [ -z "$ROOTFS_SIZE" ]; then
     echo "computed ROOTFS_SIZE=$ROOTFS_SIZE (content ${content_kb}K + 20% + 8M headroom)"
 fi
 
-mke2fs -q -t ext4 -d "$R" "$OUT" "$ROOTFS_SIZE"
+# Disable orphan_file + metadata_csum_seed: e2fsprogs 1.47 enables them by
+# default, but they can block online resize of the mounted root on the
+# Firecracker guest kernel — and the root is grown via resize2fs at first boot
+# (see k3s-bootstrap). Building without them keeps that online resize clean.
+mke2fs -q -t ext4 -O ^orphan_file,^metadata_csum_seed -d "$R" "$OUT" "$ROOTFS_SIZE"
 echo "=== built ==="; ls -la "$OUT"
 echo "=== default runlevel ==="; ls "$R/etc/runlevels/default"
 echo "k3s_version=$K3S_VERSION" > "${OUT}.meta"
