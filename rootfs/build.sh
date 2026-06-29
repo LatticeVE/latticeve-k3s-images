@@ -10,8 +10,11 @@
 #   ALPINE_VERSION=3.21.7 K3S_VERSION=v1.31.5+k3s1 ./build.sh
 set -euo pipefail
 
-ALPINE_BRANCH="${ALPINE_BRANCH:-v3.21}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.21.7}"
+# Alpine's release directory is keyed by branch (e.g. v3.21), not by the exact
+# minirootfs patch version, so default it from ALPINE_VERSION's major.minor
+# rather than hardcoding a branch that can drift out of sync with the version.
+ALPINE_BRANCH="${ALPINE_BRANCH:-v$(echo "$ALPINE_VERSION" | cut -d. -f1,2)}"
 K3S_VERSION="${K3S_VERSION:-v1.31.5+k3s1}"
 # ARCH follows uname/Alpine convention (x86_64, aarch64) since that's what
 # Alpine's download URLs and the chroot/mke2fs host both need. Output files
