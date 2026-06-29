@@ -35,10 +35,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${WORK:-$(pwd)}"
 cd "$WORK"
 R="rootfs"
-# Embed the full k3s version (including the +k3s1 build suffix) in the
-# filename so LatticeVE's discovery feed can read the version straight off
-# the artifact name without parsing the release tag.
-OUT="k3s-${K3S_VERSION}-${GOARCH}.ext4"
+# BUILD_ID is the release build identifier (e.g. "r5", the CI run number),
+# appended to the version so the artifact name carries "k3s version + build id".
+# Empty for local builds.
+BUILD_ID="${BUILD_ID:-}"
+# Name the artifact "<k3s-version>[-<build-id>]-<arch>.ext4" (e.g.
+# v1.36.2+k3s1-r5-amd64.ext4) — no "k3s-" prefix — so LatticeVE's discovery
+# feed reads the full "version + build id" straight off the artifact name.
+OUT="${K3S_VERSION}${BUILD_ID:+-$BUILD_ID}-${GOARCH}.ext4"
 
 # --- fetch inputs (reuse local copies if present) ---------------------------
 if [ ! -f mini.tar.gz ]; then
@@ -123,3 +127,4 @@ echo "=== default runlevel ==="; ls "$R/etc/runlevels/default"
 echo "k3s_version=$K3S_VERSION" > "${OUT}.meta"
 echo "alpine_version=$ALPINE_VERSION" >> "${OUT}.meta"
 echo "arch=$GOARCH" >> "${OUT}.meta"
+echo "build_id=$BUILD_ID" >> "${OUT}.meta"

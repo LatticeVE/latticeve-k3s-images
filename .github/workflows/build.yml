@@ -43,9 +43,9 @@ jobs:
             K3S_VERSION="$(k3s_version)"
             ALPINE_VERSION="3.24.1"
             LATEST_TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)"
-            # Tag format is k3s-<version>-r<run>; strip both ends to recover
-            # just the version for comparison.
-            LATEST_VERSION="$(echo "$LATEST_TAG" | sed -E 's/^k3s-//; s/-r[0-9]+$//')"
+            # Tag format is <version>-r<run> (e.g. v1.36.2+k3s1-r5); strip the
+            # build-id suffix to recover just the version for comparison.
+            LATEST_VERSION="$(echo "$LATEST_TAG" | sed -E 's/-r[0-9]+$//')"
             if [ "$K3S_VERSION" = "$LATEST_VERSION" ]; then
               SHOULD_BUILD=false
             else
@@ -79,13 +79,14 @@ jobs:
           K3S_VERSION: ${{ needs.check-version.outputs.k3s_version }}
           ALPINE_VERSION: ${{ needs.check-version.outputs.alpine_version }}
           ARCH: ${{ matrix.arch }}
+          BUILD_ID: r${{ github.run_number }}
         run: sudo -E WORK="$PWD" ./build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: k3s-rootfs-${{ matrix.goarch }}
           path: |
-            rootfs/k3s-${{ needs.check-version.outputs.k3s_version }}-${{ matrix.goarch }}.ext4
-            rootfs/k3s-${{ needs.check-version.outputs.k3s_version }}-${{ matrix.goarch }}.ext4.meta
+            rootfs/${{ needs.check-version.outputs.k3s_version }}-r${{ github.run_number }}-${{ matrix.goarch }}.ext4
+            rootfs/${{ needs.check-version.outputs.k3s_version }}-r${{ github.run_number }}-${{ matrix.goarch }}.ext4.meta
 
   release:
     needs: [check-version, rootfs]
@@ -101,7 +102,7 @@ jobs:
       - name: Tag
         id: tag
         run: |
-          echo "tag=k3s-${{ needs.check-version.outputs.k3s_version }}-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ needs.check-version.outputs.k3s_version }}-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
