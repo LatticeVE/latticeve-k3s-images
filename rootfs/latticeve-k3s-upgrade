@@ -1,0 +1,65 @@
+#!/bin/sh
+# Guest-side k3s upgrade hook for LatticeVE Firecracker Kubernetes nodes.
+#
+# The LatticeVE controller calls this script inside each node during a cluster
+# upgrade. It intentionally performs an in-place k3s binary swap and service
+# restart so control-plane VMs keep their embedded datastore/etcd membership.
+set -eu
+
+version="${1:-}"
+if [ -z "$version" ]; then
+    echo "usage: latticeve-k3s-upgrade <k3s-version>" >&2
+    exit 2
+fi
+
+case "$version" in
+    v*) ;;
+    *) version="v$version" ;;
+esac
+
+arch="$(uname -m)"
+case "$arch" in
+    x86_64) asset="k3s" ;;
+    aarch64|arm64) asset="k3s-arm64" ;;
+    *) echo "unsupported architecture: $arch" >&2; exit 2 ;;
+esac
+
+encoded_version="$(printf '%s' "$version" | sed 's/+/%2B/g')"
+url="https://github.com/k3s-io/k3s/releases/download/${encoded_version}/${asset}"
+tmp="/usr/local/bin/k3s.${version}.$$"
+backup="/usr/local/bin/k3s.previous"
+
+echo "downloading k3s ${version} (${asset})"
+wget -qO "$tmp" "$url"
+chmod 0755 "$tmp"
+
+"$tmp" --version >/tmp/latticeve-k3s-upgrade.version 2>&1 || {
+    cat /tmp/latticeve-k3s-upgrade.version >&2
+    rm -f "$tmp"
+    exit 1
+}
+
+echo "stopping k3s"
+rc-service k3s stop
+
+cp -f /usr/local/bin/k3s "$backup"
+mv -f "$tmp" /usr/local/bin/k3s
+
+echo "starting k3s"
+if ! rc-service k3s start; then
+    echo "k3s failed to start after upgrade; rolling binary back" >&2
+    cp -f "$backup" /usr/local/bin/k3s
+    rc-service k3s start || true
+    exit 1
+fi
+
+for i in $(seq 1 60); do
+    if rc-service k3s status >/dev/null 2>&1; then
+        /usr/local/bin/k3s --version
+        exit 0
+    fi
+    sleep 2
+done
+
+echo "k3s did not report healthy after upgrade" >&2
+exit 1

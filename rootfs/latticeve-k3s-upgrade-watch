@@ -1,0 +1,78 @@
+#!/bin/sh
+# Poll Firecracker MMDS for LatticeVE k3s upgrade requests.
+set -eu
+
+mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
+
+state_dir="/var/lib/latticeve"
+last_nonce_file="$state_dir/last-upgrade-nonce"
+log="/var/log/latticeve-k3s-upgrade.log"
+mkdir -p "$state_dir" /var/log
+
+echo "latticeve-k3s-upgrade-watch started" >> "$log"
+
+upload_snapshot_if_requested() {
+    role="$(mmds role || true)"
+    [ "$role" = "server" ] || return 0
+    snapshot_url="$(mmds snapshot_url || true)"
+    snapshot_token="$(mmds snapshot_token || true)"
+    snapshot_name="$(mmds snapshot_name || true)"
+    snapshot_reason="$(mmds snapshot_reason || true)"
+    snapshot_nonce="$(mmds snapshot_nonce || true)"
+    [ -n "$snapshot_url" ] && [ -n "$snapshot_token" ] && [ -n "$snapshot_name" ] && [ -n "$snapshot_nonce" ] || return 0
+
+    last_snapshot_nonce_file="$state_dir/last-snapshot-nonce"
+    last_snapshot=""
+    [ -f "$last_snapshot_nonce_file" ] && last_snapshot="$(cat "$last_snapshot_nonce_file" 2>/dev/null || true)"
+    [ "$snapshot_nonce" != "$last_snapshot" ] || return 0
+
+    snap_dir="/var/lib/rancher/k3s/server/db/snapshots"
+    mkdir -p "$snap_dir"
+    echo "$(date -Iseconds) etcd snapshot requested: name=$snapshot_name nonce=$snapshot_nonce" >> "$log"
+    if ! /usr/local/bin/k3s etcd-snapshot save --name "$snapshot_name" --dir "$snap_dir" >> "$log" 2>&1; then
+        echo "$(date -Iseconds) etcd snapshot create failed: name=$snapshot_name nonce=$snapshot_nonce" >> "$log"
+        return 1
+    fi
+    snap_file="$(find "$snap_dir" -type f -name "${snapshot_name}*" | sort | tail -1)"
+    if [ -z "$snap_file" ] || [ ! -s "$snap_file" ]; then
+        echo "$(date -Iseconds) etcd snapshot file missing after save: name=$snapshot_name" >> "$log"
+        return 1
+    fi
+
+    wget_tls="--no-check-certificate"
+    if [ -f /usr/local/share/ca-certificates/lattice-controller.crt ]; then
+        wget_tls=""
+    fi
+    if wget -q $wget_tls \
+        --header="X-Snapshot-Token: $snapshot_token" \
+        --header="X-Snapshot-Name: $snapshot_name" \
+        --header="X-Snapshot-Reason: ${snapshot_reason:-pre-upgrade}" \
+        --post-file="$snap_file" -O- "$snapshot_url" >/dev/null 2>&1; then
+        echo "$snapshot_nonce" > "$last_snapshot_nonce_file"
+        echo "$(date -Iseconds) etcd snapshot uploaded: file=$snap_file" >> "$log"
+        return 0
+    fi
+    echo "$(date -Iseconds) etcd snapshot upload failed: file=$snap_file" >> "$log"
+    return 1
+}
+
+while true; do
+    upload_snapshot_if_requested || true
+    version="$(mmds upgrade_version || true)"
+    nonce="$(mmds upgrade_nonce || true)"
+    if [ -n "$version" ] && [ -n "$nonce" ]; then
+        last=""
+        [ -f "$last_nonce_file" ] && last="$(cat "$last_nonce_file" 2>/dev/null || true)"
+        if [ "$nonce" != "$last" ]; then
+            echo "$(date -Iseconds) upgrade requested: version=$version nonce=$nonce" >> "$log"
+            echo "$nonce" > "$last_nonce_file"
+            if /usr/local/bin/latticeve-k3s-upgrade "$version" >> "$log" 2>&1; then
+                echo "$(date -Iseconds) upgrade completed: version=$version nonce=$nonce" >> "$log"
+            else
+                rc=$?
+                echo "$(date -Iseconds) upgrade failed: version=$version nonce=$nonce rc=$rc" >> "$log"
+            fi
+        fi
+    fi
+    sleep 5
+done

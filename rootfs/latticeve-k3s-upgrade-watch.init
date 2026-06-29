@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+description="LatticeVE k3s upgrade watcher"
+
+command=/usr/local/bin/latticeve-k3s-upgrade-watch
+command_background=true
+pidfile=/run/latticeve-k3s-upgrade-watch.pid
+output_log=/var/log/latticeve-k3s-upgrade.log
+error_log=/var/log/latticeve-k3s-upgrade.log
+
+depend() {
+    need net
+    after k3s
+}

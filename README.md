@@ -18,8 +18,24 @@ Firecracker's own CI bucket via its Kernel Catalog, independent of this repo.
 cd rootfs && K3S_VERSION=v1.31.5+k3s1 ALPINE_VERSION=3.24.1 sudo -E ./build.sh
 ```
 
-Produces `k3s-<version>-<amd64|arm64>.ext4` (e.g. `k3s-v1.31.5+k3s1-amd64.ext4`),
+Produces `<version>-<amd64|arm64>.ext4` (e.g. `v1.31.5+k3s1-amd64.ext4`),
 with a `.meta` sidecar recording the k3s/Alpine versions baked in.
+
+The image also installs `/usr/local/bin/latticeve-k3s-upgrade`, the guest-side
+hook LatticeVE calls during Kubernetes upgrades. The helper downloads the target
+k3s binary for the node architecture, stops the OpenRC `k3s` service, atomically
+swaps `/usr/local/bin/k3s`, restarts the service, and rolls the binary back if
+the service fails to start.
+
+Upgrades are triggered through Firecracker MMDS, not SSH or qemu-guest-agent:
+the `latticeve-k3s-upgrade-watch` OpenRC service polls `upgrade_version` and
+`upgrade_nonce`, then runs the upgrade hook exactly once per nonce. Logs go to
+`/var/log/latticeve-k3s-upgrade.log`.
+
+Before a control-plane upgrade, the same watcher can receive `snapshot_url`,
+`snapshot_token`, and `snapshot_nonce` through MMDS. Server nodes create a k3s
+etcd snapshot, upload it to the controller, and only then the controller starts
+the rolling upgrade.
 
 ## CI
 

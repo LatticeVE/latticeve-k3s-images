@@ -83,6 +83,9 @@ EOF
 # command and respawns on crash.
 install -m0755 "$SCRIPT_DIR/k3s-bootstrap" "$R/etc/init.d/k3s-bootstrap"
 install -m0755 "$SCRIPT_DIR/k3s.init" "$R/etc/init.d/k3s"
+install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade" "$R/usr/local/bin/latticeve-k3s-upgrade"
+install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade-watch" "$R/usr/local/bin/latticeve-k3s-upgrade-watch"
+install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade-watch.init" "$R/etc/init.d/latticeve-k3s-upgrade-watch"
 
 # cgroups v2 unified (k3s requires a sane cgroup mount) + drop ttyN gettys
 # (Firecracker only has ttyS0) so the console doesn't flood.
@@ -98,12 +101,21 @@ chroot "$R" /bin/sh -c '
   # server, started by k3s-bootstrap only when the cluster supplies SSH keys.
   apk add --no-cache openrc iproute2 e2fsprogs ca-certificates dropbear >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
-  # -> k3s fatals "unhandled cgroup mode". Populate them explicitly.
-  for s in devfs dmesg sysfs cgroups hwdrivers; do rc-update add $s sysinit; done
-  for s in procfs bootmisc modules hostname sysctl seedrng localmount; do rc-update add $s boot; done
+  # -> k3s fatals "unhandled cgroup mode". Populate the minimum services
+  # Firecracker needs, and remove module/hw probing services that only produce
+  # noise with our external kernel and no /lib/modules tree.
+  rc-update del hwdrivers sysinit 2>/dev/null || true
+  rc-update del modules boot 2>/dev/null || true
+  rc-update del modules sysinit 2>/dev/null || true
+  rc-update add devfs sysinit
+  rc-update add sysfs sysinit
+  rc-update add cgroups sysinit
+  for s in procfs bootmisc hostname sysctl seedrng localmount; do rc-update add $s boot; done
   rc-update add networking boot
+  rc-update add local default
   rc-update add k3s-bootstrap default
   rc-update add k3s default
+  rc-update add latticeve-k3s-upgrade-watch default
   # Passwordless root by default. A cluster can set a root password (root_pw_hash)
   # and/or SSH keys (ssh_keys) via MMDS, applied at boot by k3s-bootstrap.
   passwd -d root
