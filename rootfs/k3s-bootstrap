@@ -120,10 +120,11 @@ EOF
               wget_tls=""
             fi
           fi
-          ( for j in $(seq 1 120); do
-              [ -f /etc/rancher/k3s/k3s.yaml ] && \
+          ( for j in $(seq 1 360); do
+              if [ -f /etc/rancher/k3s/k3s.yaml ]; then
                 wget -q $wget_tls --header="X-Cluster-Token: $cb_token" \
                   --post-file=/etc/rancher/k3s/k3s.yaml -O- "$cb" >/dev/null 2>&1 && break
+              fi
               sleep 5
             done ) &
         fi
