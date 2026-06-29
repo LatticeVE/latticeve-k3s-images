@@ -1,0 +1,210 @@
+name: build-kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: "Linux kernel version (must match an available Firecracker CI build, e.g. 6.1.174)"
+        required: true
+        default: "6.1.174"
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            goarch: amd64
+            cross_compile: ""
+            fc_arch: x86_64
+          - arch: aarch64
+            goarch: arm64
+            cross_compile: "aarch64-linux-gnu-"
+            fc_arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Download Firecracker kernel source + config
+        env:
+          KERNEL_VERSION: ${{ inputs.kernel_version }}
+          FC_ARCH: ${{ matrix.fc_arch }}
+        run: |
+          set -euo pipefail
+          MAJOR_MINOR="$(echo "$KERNEL_VERSION" | cut -d. -f1,2)"
+
+          # Fetch the Firecracker CI config for this exact kernel version.
+          # Firecracker's S3 bucket uses dated build directories:
+          #   firecracker-ci/YYYYMMDD-<hash>-0/<arch>/vmlinux-<kver>.config
+          # Walk all dated dirs newest-first until we find the target version.
+          CONFIG_URL=""
+          DIRS=$(curl -s "https://s3.amazonaws.com/spec.ccfc.min/?list-type=2&prefix=firecracker-ci/&delimiter=/" \
+            | grep -o '<Prefix>[^<]*</Prefix>' | sed 's|<Prefix>||g;s|</Prefix>||g' \
+            | grep "^firecracker-ci/[0-9]\{8\}-" | sort -r)
+          for DIR in $DIRS; do
+            URL="https://s3.amazonaws.com/spec.ccfc.min/${DIR}${FC_ARCH}/vmlinux-${KERNEL_VERSION}.config"
+            if curl -sfI "$URL" >/dev/null 2>&1; then
+              CONFIG_URL="$URL"
+              break
+            fi
+          done
+
+          if [ -z "$CONFIG_URL" ]; then
+            echo "Could not find Firecracker CI config for kernel $KERNEL_VERSION / $FC_ARCH" >&2
+            exit 1
+          fi
+          echo "Using config: $CONFIG_URL"
+          curl -sfo kernel.config "$CONFIG_URL"
+
+          # Download kernel source from kernel.org.
+          MAJOR="$(echo "$KERNEL_VERSION" | cut -d. -f1)"
+          curl -sfO "https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+          tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+          mv "linux-${KERNEL_VERSION}" linux
+
+      - name: Apply k8s-required netfilter options
+        # The Firecracker CI kernels are minimal: they disable most xt_ extensions
+        # that kube-proxy (embedded in k3s) needs to set up ClusterIP service routing
+        # via iptables. These additions are the minimum set kube-proxy requires:
+        #   - XT_TARGET_MARK / XT_MATCH_MARK:  kube-proxy uses fwmark to identify
+        #     masquerade candidates and to balance across service backends.
+        #   - XT_MATCH_COMMENT:  kube-proxy annotates every rule it writes with an
+        #     identifying comment (--comment flag); rules without comments are
+        #     considered stale and deleted on the next sync, so without this module
+        #     kube-proxy re-writes the entire ruleset on every sync and immediately
+        #     deletes what it just wrote, leaving no rules in effect.
+        #   - XT_MATCH_MULTIPORT:  multi-port services (most services) need this to
+        #     match src or dst port ranges in a single rule.
+        #   - XT_MATCH_STATISTIC:  used for probabilistic backend selection in
+        #     KUBE-SEP-* chains (kube-proxy's per-endpoint chains).
+        #   - XT_CONNMARK / XT_TARGET_CONNMARK:  kube-proxy uses connmark to
+        #     steer return traffic back through the same NAT path.
+        # Also enable NFT_MASQ + NFT_REDIR so the nftables kube-proxy backend
+        # (proxy-mode=nftables, GA in k8s 1.31+) is available as a fallback.
+        run: |
+          set -euo pipefail
+          CONFIG=linux/.config
+          cp kernel.config "$CONFIG"
+          python3 - <<'EOF'
+          import re, sys
+
+          additions = {
+              "CONFIG_NETFILTER_XT_TARGET_MARK":    "y",
+              "CONFIG_NETFILTER_XT_MATCH_MARK":     "y",
+              "CONFIG_NETFILTER_XT_MATCH_COMMENT":  "y",
+              "CONFIG_NETFILTER_XT_MATCH_MULTIPORT":"y",
+              "CONFIG_NETFILTER_XT_MATCH_STATISTIC":"y",
+              "CONFIG_NETFILTER_XT_CONNMARK":       "y",
+              "CONFIG_NETFILTER_XT_TARGET_CONNMARK":"y",
+              "CONFIG_NFT_MASQ":                    "y",
+              "CONFIG_NFT_REDIR":                   "y",
+          }
+
+          with open("linux/.config") as f:
+              lines = f.readlines()
+
+          result = []
+          seen = set()
+          for line in lines:
+              m = re.match(r"^(# )?(CONFIG_[A-Z0-9_]+)", line)
+              if m:
+                  key = m.group(2)
+                  if key in additions:
+                      result.append(f"{key}={additions[key]}\n")
+                      seen.add(key)
+                      continue
+              result.append(line)
+
+          # Append any keys not already in the file.
+          for key, val in additions.items():
+              if key not in seen:
+                  result.append(f"{key}={val}\n")
+
+          with open("linux/.config", "w") as f:
+              f.writelines(result)
+          print("Applied additions:", list(additions.keys()))
+          EOF
+
+      - name: Build kernel
+        env:
+          CROSS_COMPILE: ${{ matrix.cross_compile }}
+          ARCH: ${{ matrix.arch == 'aarch64' && 'arm64' || 'x86_64' }}
+          KERNEL_VERSION: ${{ inputs.kernel_version }}
+        run: |
+          set -euo pipefail
+          cd linux
+          # Resolve any new symbols introduced by our config additions.
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          # Build just the compressed kernel image (no modules — Firecracker
+          # doesn't support loadable modules and the rootfs has no /lib/modules).
+          JOBS="$(nproc)"
+          if [ "$ARCH" = "x86_64" ]; then
+            make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" bzImage
+            cp arch/x86/boot/bzImage "../vmlinuz-latticeve-k3s-${KERNEL_VERSION}-${{ matrix.goarch }}"
+          else
+            make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" Image
+            cp arch/arm64/boot/Image "../vmlinuz-latticeve-k3s-${KERNEL_VERSION}-${{ matrix.goarch }}"
+          fi
+
+      - name: Verify netfilter options are present
+        env:
+          KERNEL_VERSION: ${{ inputs.kernel_version }}
+        run: |
+          set -euo pipefail
+          VMLINUZ="vmlinuz-latticeve-k3s-${KERNEL_VERSION}-${{ matrix.goarch }}"
+          # Extract the embedded config (requires CONFIG_IKCONFIG=y in base).
+          scripts/extract-ikconfig "$VMLINUZ" > built.config 2>/dev/null || true
+          for key in CONFIG_NETFILTER_XT_TARGET_MARK CONFIG_NETFILTER_XT_MATCH_MARK \
+                     CONFIG_NETFILTER_XT_MATCH_COMMENT CONFIG_NETFILTER_XT_MATCH_MULTIPORT \
+                     CONFIG_NETFILTER_XT_MATCH_STATISTIC CONFIG_NETFILTER_XT_CONNMARK; do
+            if grep -q "^${key}=y" linux/.config; then
+              echo "PASS: $key=y"
+            else
+              echo "FAIL: $key not set in final config" >&2
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.goarch }}
+          path: vmlinuz-latticeve-k3s-${{ inputs.kernel_version }}-${{ matrix.goarch }}
+
+  release:
+    needs: kernel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KERNEL_VERSION: ${{ inputs.kernel_version }}
+        run: |
+          TAG="kernel-${KERNEL_VERSION}-r${{ github.run_number }}"
+          gh release create "$TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Kernel ${KERNEL_VERSION} (LatticeVE k3s)" \
+            --notes "Linux ${KERNEL_VERSION} kernel with Kubernetes networking extensions.
+
+Based on the Firecracker CI config + additions required for kube-proxy iptables mode:
+- \`CONFIG_NETFILTER_XT_TARGET_MARK=y\`
+- \`CONFIG_NETFILTER_XT_MATCH_MARK=y\`
+- \`CONFIG_NETFILTER_XT_MATCH_COMMENT=y\`
+- \`CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y\`
+- \`CONFIG_NETFILTER_XT_MATCH_STATISTIC=y\`
+- \`CONFIG_NETFILTER_XT_CONNMARK=y\` / \`CONFIG_NETFILTER_XT_TARGET_CONNMARK=y\`
+- \`CONFIG_NFT_MASQ=y\` / \`CONFIG_NFT_REDIR=y\`
+
+Upload to LatticeVE via \`POST /kernels\` (multipart: \`name\`, \`arch\`, \`version\`, \`vmlinuz\`)."
