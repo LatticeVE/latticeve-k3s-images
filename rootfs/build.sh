@@ -122,6 +122,13 @@ chroot "$R" /bin/sh -c '
   rc-update del hwdrivers sysinit 2>/dev/null || true
   rc-update del modules boot 2>/dev/null || true
   rc-update del modules sysinit 2>/dev/null || true
+  # Mask modules + hwdrivers so they cannot be pulled in as dependencies by
+  # other services (rc-update del only removes them from runlevels; a dependent
+  # service can still start them). Firecracker uses an external kernel with no
+  # /lib/modules tree, so loading modules is always a no-op and the modprobe
+  # errors are pure noise.
+  ln -sf /dev/null /etc/init.d/modules
+  ln -sf /dev/null /etc/init.d/hwdrivers
   rc-update add devfs sysinit
   rc-update add sysfs sysinit
   rc-update add cgroups sysinit
