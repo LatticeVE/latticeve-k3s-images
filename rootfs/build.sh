@@ -21,7 +21,10 @@ K3S_VERSION="${K3S_VERSION:-v1.31.5+k3s1}"
 # are named with the Docker/Go convention (amd64, arm64) instead, since
 # that's what LatticeVE and k3s's own release assets use.
 ARCH="${ARCH:-x86_64}"
-ROOTFS_SIZE="${ROOTFS_SIZE:-256M}"
+# Real content is ~101M (k3s binary ~81M, already symbol-stripped upstream --
+# Alpine + openrc/iproute2/e2fsprogs add ~20M); 150M leaves ~35-40M margin for
+# ext4 overhead and version growth without carrying the dead weight 256M did.
+ROOTFS_SIZE="${ROOTFS_SIZE:-150M}"
 
 case "$ARCH" in
   x86_64)  GOARCH="amd64" ;;
