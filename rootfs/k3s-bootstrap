@@ -1,26 +1,37 @@
 #!/sbin/openrc-run
 # LatticeVE k3s bootstrap (OpenRC, oneshot). Reads per-node configuration from
-# the Firecracker Metadata Service (MMDS, V1 @ 169.254.169.254) which the
+# the Firecracker Metadata Service (MMDS, V2 @ 169.254.169.254) which the
 # controller publishes pre/post-boot, prepares the node, and writes the resolved
 # k3s command to /run/k3s/run. The separate, supervised `k3s` service then runs
 # that wrapper (respawning k3s if it crashes) — see the k3s init script.
 #
 # MMDS keys:
-#   role         "server" | "agent"
-#   token        cluster join token (also authenticates the kubeconfig callback)
-#   server       join URL (https://<ip>:6443) — for agents and joining servers
-#   init         "1" on the first control-plane node (embedded-etcd cluster-init)
-#   cni          CNI name ("flannel" default → host-gw; anything else → none)
-#   callback     controller URL the first server POSTs its kubeconfig to
-#   callback_ca  base64 controller serving cert, to verify the callback's TLS
-#   node_name    k8s node name (hostname)
-#   tls_san      space-separated extra TLS SANs (LB VIP, public IP) for the cert
-#   root_pw_hash crypt(3) root password hash (optional; default passwordless)
-#   ssh_keys     base64 newline-joined SSH public keys (optional; enables sshd)
+#   role           "server" | "agent"
+#   token          cluster join token
+#   callback_token single-use token authenticating the kubeconfig POST (cp-0 only)
+#   server         join URL (https://<ip>:6443) — for agents and joining servers
+#   init           "1" on the first control-plane node (embedded-etcd cluster-init)
+#   cni            CNI name ("flannel" default → host-gw; anything else → none)
+#   callback       controller URL the first server POSTs its kubeconfig to
+#   callback_ca    base64 controller serving cert, to verify the callback's TLS
+#   node_name      k8s node name (hostname)
+#   tls_san        space-separated extra TLS SANs (LB VIP, public IP) for the cert
+#   root_pw_hash   crypt(3) root password hash (optional; default passwordless)
+#   ssh_keys       base64 newline-joined SSH public keys (optional; enables sshd)
 description="LatticeVE k3s bootstrap (Firecracker MMDS)"
 depend() { need net; before k3s; }
 
-mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
+# MMDS V2: acquire a session token once and reuse it across all key reads.
+_MMDS_TOKEN=""
+mmds_init_token() {
+    _MMDS_TOKEN=$(wget --method=PUT \
+                       --header="X-metadata-token-ttl-seconds: 300" \
+                       -qO- "http://169.254.169.254/latest/api/token" 2>/dev/null)
+}
+mmds() {
+    wget --header="X-metadata-token: $_MMDS_TOKEN" \
+         -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'
+}
 
 # apply_node_access sets an optional root password and installs optional SSH
 # authorized keys (starting dropbear, key-only, when keys are present). Both
@@ -52,6 +63,7 @@ start() {
     resize2fs /dev/vda 2>/dev/null || ewarn "resize2fs failed; disk may be undersized"
 
     ip route add 169.254.169.254/32 dev eth0 2>/dev/null || true
+    mmds_init_token
 
     local role="" i=0
     while [ $i -lt 90 ]; do
@@ -60,7 +72,7 @@ start() {
     done
     [ -z "$role" ] && { eend 1 "MMDS role unavailable"; return 1; }
 
-    local token=$(mmds token) server=$(mmds server) cni=$(mmds cni) cb=$(mmds callback)
+    local token=$(mmds token) cb_token=$(mmds callback_token) server=$(mmds server) cni=$(mmds cni) cb=$(mmds callback)
     local nn=$(mmds node_name) init=$(mmds init) tlssan=$(mmds tls_san)
 
     # Hostname → meaningful k8s node name (default is "localhost" otherwise).
@@ -111,7 +123,7 @@ EOF
           fi
           ( for j in $(seq 1 120); do
               [ -f /etc/rancher/k3s/k3s.yaml ] && \
-                wget -q $wget_tls --header="X-Cluster-Token: $token" \
+                wget -q $wget_tls --header="X-Cluster-Token: $cb_token" \
                   --post-file=/etc/rancher/k3s/k3s.yaml -O- "$cb" >/dev/null 2>&1 && break
               sleep 5
             done ) &
