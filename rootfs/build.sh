@@ -93,8 +93,9 @@ chroot "$R" /bin/sh -c '
   set -e
   # ca-certificates provides the trust bundle + update-ca-certificates so the
   # k3s-bootstrap service can verify TLS on the kubeconfig callback against the
-  # controller's published serving cert. dropbear is a tiny SSH server, started
-  # by k3s-bootstrap only when the cluster supplies SSH authorized keys (key-only).
+  # controller serving cert (no apostrophes here: this whole block is a single-
+  # quoted sh -c argument, so one would close the quote). dropbear is a tiny SSH
+  # server, started by k3s-bootstrap only when the cluster supplies SSH keys.
   apk add --no-cache openrc iproute2 e2fsprogs ca-certificates dropbear >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
   # -> k3s fatals "unhandled cgroup mode". Populate them explicitly.
