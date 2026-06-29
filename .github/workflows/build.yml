@@ -84,7 +84,15 @@ jobs:
           merge-multiple: true
       - name: Tag
         id: tag
-        run: echo "tag=k3s-${{ inputs.k3s_version }}-kernel-${{ inputs.kernel_version }}-$(date +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+        env:
+          K3S_VERSION: ${{ inputs.k3s_version }}
+        run: |
+          # Strip the "+k3s1" build suffix and any literal "+" (which URL-encodes
+          # to %2B and is awkward in a tag/URL) -- just keep the run number for
+          # uniqueness instead of a full timestamp, which is shorter and still
+          # unique per workflow run.
+          k3s_short="${K3S_VERSION%%+*}"
+          echo "tag=k3s-${k3s_short}-kernel-${{ inputs.kernel_version }}-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
