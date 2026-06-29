@@ -92,6 +92,21 @@ install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade-watch.init" "$R/etc/init.d/lat
 echo 'rc_cgroup_mode="unified"' >> "$R/etc/rc.conf"
 sed -i '/^tty[1-6]/d' "$R/etc/inittab"
 
+# Raise the open-file limit for the k3s service (and all its children:
+# containerd, kubelet, CNI plugins). Alpine's default 1024 is exhausted by a
+# handful of pods. 65535 is the standard k3s node recommendation.
+mkdir -p "$R/etc/conf.d"
+echo 'rc_ulimit="-n 65535"' > "$R/etc/conf.d/k3s"
+
+# inotify tunables — each pod/container registers watchers; the kernel defaults
+# (max_user_watches=8192, max_user_instances=128) are exhausted quickly.
+# Applied at boot by the sysctl OpenRC service (already in the boot runlevel).
+mkdir -p "$R/etc/sysctl.d"
+cat > "$R/etc/sysctl.d/99-k3s.conf" <<'EOF'
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
+EOF
+
 chroot "$R" /bin/sh -c '
   set -e
   # ca-certificates provides the trust bundle + update-ca-certificates so the
