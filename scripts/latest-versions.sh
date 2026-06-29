@@ -83,6 +83,9 @@ alpine_version() {
 fc_kernel_version() {
     local arch="${1:-x86_64}"
     local base="https://s3.amazonaws.com/spec.ccfc.min"
+    # Minimum supported kernel major. Firecracker still ships 5.10 configs, but
+    # LatticeVE k3s nodes target the 6.x line and up, so 5.x is filtered out.
+    local min_major=6
     local dirs d vers
     # Dated CI build dirs (firecracker-ci/YYYYMMDD-<hash>-0/), newest first.
     dirs=$(curl -sSL "${base}/?list-type=2&prefix=firecracker-ci/&delimiter=/" \
@@ -93,18 +96,19 @@ fc_kernel_version() {
         return 1
     fi
     # Walk newest-first; return the highest kernel version (proper version sort)
-    # that has a vmlinux config for this arch.
+    # that has a vmlinux config for this arch, ignoring majors below min_major.
     for d in $dirs; do
         vers=$(curl -sSL "${base}/?list-type=2&prefix=${d}${arch}/vmlinux-" \
             | grep -oE 'vmlinux-[0-9]+(\.[0-9]+)+\.config' \
             | sed -E 's/^vmlinux-(.*)\.config$/\1/' \
+            | awk -F. -v m="$min_major" '$1 >= m' \
             | sort -V)
         if [ -n "$vers" ]; then
             echo "$vers" | tail -1
             return 0
         fi
     done
-    echo "fc_kernel_version: no vmlinux config found for arch $arch" >&2
+    echo "fc_kernel_version: no vmlinux config found for arch $arch (major >= $min_major)" >&2
     return 1
 }
 
