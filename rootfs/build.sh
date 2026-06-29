@@ -35,7 +35,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${WORK:-$(pwd)}"
 cd "$WORK"
 R="rootfs"
-OUT="k3s-rootfs-${GOARCH}.ext4"
+# Embed the full k3s version (including the +k3s1 build suffix) in the
+# filename so LatticeVE's discovery feed can read the version straight off
+# the artifact name without parsing the release tag.
+OUT="k3s-${K3S_VERSION}-${GOARCH}.ext4"
 
 # --- fetch inputs (reuse local copies if present) ---------------------------
 if [ ! -f mini.tar.gz ]; then

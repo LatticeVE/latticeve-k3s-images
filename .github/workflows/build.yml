@@ -11,13 +11,56 @@ on:
         description: "Alpine minirootfs version (e.g. 3.24.1)"
         required: true
         default: "3.24.1"
-      kernel_version:
-        description: "Guest kernel version (e.g. 6.1.174)"
-        required: true
-        default: "6.1.174"
+  schedule:
+    # Daily check for a new stable k3s release (RCs are skipped — see
+    # scripts/latest-versions.sh); only builds when one is actually found.
+    - cron: '0 6 * * *'
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      k3s_version: ${{ steps.resolve.outputs.k3s_version }}
+      alpine_version: ${{ steps.resolve.outputs.alpine_version }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve versions and decide whether to build
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_K3S_VERSION: ${{ inputs.k3s_version }}
+          DISPATCH_ALPINE_VERSION: ${{ inputs.alpine_version }}
+        run: |
+          set -euo pipefail
+          source scripts/latest-versions.sh
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            K3S_VERSION="$DISPATCH_K3S_VERSION"
+            ALPINE_VERSION="$DISPATCH_ALPINE_VERSION"
+            SHOULD_BUILD=true
+          else
+            K3S_VERSION="$(k3s_version)"
+            ALPINE_VERSION="3.24.1"
+            LATEST_TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)"
+            # Tag format is k3s-<version>-r<run>; strip both ends to recover
+            # just the version for comparison.
+            LATEST_VERSION="$(echo "$LATEST_TAG" | sed -E 's/^k3s-//; s/-r[0-9]+$//')"
+            if [ "$K3S_VERSION" = "$LATEST_VERSION" ]; then
+              SHOULD_BUILD=false
+            else
+              SHOULD_BUILD=true
+            fi
+          fi
+
+          echo "k3s_version=$K3S_VERSION" >> "$GITHUB_OUTPUT"
+          echo "alpine_version=$ALPINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+          echo "resolved: k3s=$K3S_VERSION alpine=$ALPINE_VERSION should_build=$SHOULD_BUILD"
+
   rootfs:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
     strategy:
       matrix:
         include:
@@ -33,47 +76,20 @@ jobs:
       - name: Build k3s rootfs
         working-directory: rootfs
         env:
-          K3S_VERSION: ${{ inputs.k3s_version }}
-          ALPINE_VERSION: ${{ inputs.alpine_version }}
+          K3S_VERSION: ${{ needs.check-version.outputs.k3s_version }}
+          ALPINE_VERSION: ${{ needs.check-version.outputs.alpine_version }}
           ARCH: ${{ matrix.arch }}
         run: sudo -E WORK="$PWD" ./build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: k3s-rootfs-${{ matrix.goarch }}
           path: |
-            rootfs/k3s-rootfs-${{ matrix.goarch }}.ext4
-            rootfs/k3s-rootfs-${{ matrix.goarch }}.ext4.meta
-
-  kernel:
-    strategy:
-      matrix:
-        include:
-          - arch: x86_64
-            goarch: amd64
-            runner: ubuntu-latest
-          - arch: aarch64
-            goarch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y build-essential bc flex bison libelf-dev libssl-dev
-      - name: Build guest kernel
-        working-directory: kernel
-        env:
-          KERNEL_VERSION: ${{ inputs.kernel_version }}
-          ARCH: ${{ matrix.arch }}
-        run: WORK="$PWD" ./build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vmlinux-${{ matrix.goarch }}
-          path: |
-            kernel/vmlinux-${{ inputs.kernel_version }}-${{ matrix.goarch }}
-            kernel/vmlinux-${{ inputs.kernel_version }}-${{ matrix.goarch }}.meta
+            rootfs/k3s-${{ needs.check-version.outputs.k3s_version }}-${{ matrix.goarch }}.ext4
+            rootfs/k3s-${{ needs.check-version.outputs.k3s_version }}-${{ matrix.goarch }}.ext4.meta
 
   release:
-    needs: [rootfs, kernel]
+    needs: [check-version, rootfs]
+    if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,15 +100,8 @@ jobs:
           merge-multiple: true
       - name: Tag
         id: tag
-        env:
-          K3S_VERSION: ${{ inputs.k3s_version }}
         run: |
-          # Strip the "+k3s1" build suffix and any literal "+" (which URL-encodes
-          # to %2B and is awkward in a tag/URL) -- just keep the run number for
-          # uniqueness instead of a full timestamp, which is shorter and still
-          # unique per workflow run.
-          k3s_short="${K3S_VERSION%%+*}"
-          echo "tag=k3s-${k3s_short}-kernel-${{ inputs.kernel_version }}-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "tag=k3s-${{ needs.check-version.outputs.k3s_version }}-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
