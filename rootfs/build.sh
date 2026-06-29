@@ -21,10 +21,9 @@ K3S_VERSION="${K3S_VERSION:-v1.31.5+k3s1}"
 # are named with the Docker/Go convention (amd64, arm64) instead, since
 # that's what LatticeVE and k3s's own release assets use.
 ARCH="${ARCH:-x86_64}"
-# Real content is ~101M (k3s binary ~81M, already symbol-stripped upstream --
-# Alpine + openrc/iproute2/e2fsprogs add ~20M); 150M leaves ~35-40M margin for
-# ext4 overhead and version growth without carrying the dead weight 256M did.
-ROOTFS_SIZE="${ROOTFS_SIZE:-150M}"
+# ROOTFS_SIZE is computed dynamically from the assembled rootfs content (see
+# below, right before mke2fs) unless explicitly overridden here.
+ROOTFS_SIZE="${ROOTFS_SIZE:-}"
 
 case "$ARCH" in
   x86_64)  GOARCH="amd64" ;;
@@ -94,6 +93,17 @@ chroot "$R" /bin/sh -c '
 
 rm -f "$R/etc/resolv.conf"
 rm -f "$OUT"
+
+# Size the image to what's actually in $R rather than a guessed constant: take
+# the real content size, add 20% headroom for ext4 metadata/journal/reserved
+# blocks plus a fixed 8M floor so small content doesn't get a razor-thin margin.
+if [ -z "$ROOTFS_SIZE" ]; then
+    content_kb=$(du -sk "$R" | cut -f1)
+    rootfs_size_kb=$(( content_kb * 12 / 10 + 8192 ))
+    ROOTFS_SIZE="${rootfs_size_kb}K"
+    echo "computed ROOTFS_SIZE=$ROOTFS_SIZE (content ${content_kb}K + 20% + 8M headroom)"
+fi
+
 mke2fs -q -t ext4 -d "$R" "$OUT" "$ROOTFS_SIZE"
 echo "=== built ==="; ls -la "$OUT"
 echo "=== default runlevel ==="; ls "$R/etc/runlevels/default"
