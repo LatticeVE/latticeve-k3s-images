@@ -194,18 +194,21 @@ jobs:
           KERNEL_VERSION: ${{ inputs.kernel_version }}
         run: |
           TAG="kernel-${KERNEL_VERSION}-r${{ github.run_number }}"
+          printf '%s\n' \
+            "Linux ${KERNEL_VERSION} kernel with Kubernetes networking extensions." \
+            "" \
+            "Based on the Firecracker CI config + additions required for kube-proxy iptables mode:" \
+            "- CONFIG_NETFILTER_XT_TARGET_MARK=y / CONFIG_NETFILTER_XT_MATCH_MARK=y" \
+            "- CONFIG_NETFILTER_XT_MATCH_COMMENT=y" \
+            "- CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y" \
+            "- CONFIG_NETFILTER_XT_MATCH_STATISTIC=y" \
+            "- CONFIG_NETFILTER_XT_CONNMARK=y / CONFIG_NETFILTER_XT_TARGET_CONNMARK=y" \
+            "- CONFIG_NFT_MASQ=y / CONFIG_NFT_REDIR=y" \
+            "" \
+            "Upload to LatticeVE via POST /kernels (multipart: name, arch, version, vmlinuz)." \
+            "The name must use the k3s- prefix (e.g. name=k3s-${KERNEL_VERSION}); LatticeVE only accepts k3s- kernels for Kubernetes clusters." \
+            > notes.md
           gh release create "$TAG" artifacts/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Kernel ${KERNEL_VERSION} (LatticeVE k3s)" \
-            --notes "Linux ${KERNEL_VERSION} kernel with Kubernetes networking extensions.
-
-Based on the Firecracker CI config + additions required for kube-proxy iptables mode:
-- \`CONFIG_NETFILTER_XT_TARGET_MARK=y\`
-- \`CONFIG_NETFILTER_XT_MATCH_MARK=y\`
-- \`CONFIG_NETFILTER_XT_MATCH_COMMENT=y\`
-- \`CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y\`
-- \`CONFIG_NETFILTER_XT_MATCH_STATISTIC=y\`
-- \`CONFIG_NETFILTER_XT_CONNMARK=y\` / \`CONFIG_NETFILTER_XT_TARGET_CONNMARK=y\`
-- \`CONFIG_NFT_MASQ=y\` / \`CONFIG_NFT_REDIR=y\`
-
-Upload to LatticeVE via \`POST /kernels\` (multipart: \`name\`, \`arch\`, \`version\`, \`vmlinuz\`)."
+            --notes-file notes.md
