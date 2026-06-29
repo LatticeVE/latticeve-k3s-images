@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
 # LatticeVE k3s bootstrap (OpenRC, oneshot). Reads per-node configuration from
-# the Firecracker Metadata Service (MMDS, V2 @ 169.254.169.254) which the
+# the Firecracker Metadata Service (MMDS, V1 @ 169.254.169.254) which the
 # controller publishes pre/post-boot, prepares the node, and writes the resolved
 # k3s command to /run/k3s/run. The separate, supervised `k3s` service then runs
 # that wrapper (respawning k3s if it crashes) — see the k3s init script.
@@ -21,17 +21,7 @@
 description="LatticeVE k3s bootstrap (Firecracker MMDS)"
 depend() { need net; before k3s; }
 
-# MMDS V2: acquire a session token once and reuse it across all key reads.
-_MMDS_TOKEN=""
-mmds_init_token() {
-    _MMDS_TOKEN=$(wget --method=PUT \
-                       --header="X-metadata-token-ttl-seconds: 300" \
-                       -qO- "http://169.254.169.254/latest/api/token" 2>/dev/null)
-}
-mmds() {
-    wget --header="X-metadata-token: $_MMDS_TOKEN" \
-         -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'
-}
+mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
 
 # apply_node_access sets an optional root password and installs optional SSH
 # authorized keys (starting dropbear, key-only, when keys are present). Both
@@ -63,7 +53,6 @@ start() {
     resize2fs /dev/vda 2>/dev/null || ewarn "resize2fs failed; disk may be undersized"
 
     ip route add 169.254.169.254/32 dev eth0 2>/dev/null || true
-    mmds_init_token
 
     local role="" i=0
     while [ $i -lt 90 ]; do
