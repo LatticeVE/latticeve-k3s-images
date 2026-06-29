@@ -4,23 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Linux kernel version (blank = latest Firecracker-supported, e.g. 6.1.174)"
+        description: "Linux kernel version (blank = latest patch of each supported major, e.g. 6.1.174)"
         required: false
         default: ""
   schedule:
-    # Daily. The resolve job tracks Firecracker's CI config set, so a newer
-    # minor — or a new major like 7.x once Firecracker supports it — gets built
-    # automatically, with no manual version checking. Already-released versions
-    # are skipped, so the daily run is a no-op (resolve job only) until something
-    # new shows up.
+    # Daily. The resolve job tracks Firecracker's CI config set and emits the
+    # latest patch of each supported major (>= 6). Already-released versions are
+    # skipped, so most days only the lightweight resolve job runs. A new major
+    # (e.g. 7.x) is picked up automatically without dropping the 6.x line.
     - cron: '0 6 * * *'
 
 jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.pick.outputs.version }}
-      build: ${{ steps.pick.outputs.build }}
+      versions: ${{ steps.pick.outputs.versions }}
     steps:
       - uses: actions/checkout@v4
       - id: pick
@@ -29,41 +27,46 @@ jobs:
           INPUT_VERSION: ${{ inputs.kernel_version }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source scripts/latest-versions.sh
           if [ -n "${INPUT_VERSION:-}" ]; then
-            VER="$INPUT_VERSION"
+            CANDIDATES="$INPUT_VERSION"
           else
-            # shellcheck source=/dev/null
-            source scripts/latest-versions.sh
-            VER="$(fc_kernel_version x86_64)"
+            CANDIDATES="$(fc_kernel_versions x86_64)"
           fi
-          echo "Resolved kernel version: $VER"
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-          # Don't rebuild a version already released — keeps the monthly cron a
-          # no-op until Firecracker publishes a newer kernel.
-          if gh release list --repo "$GITHUB_REPOSITORY" --limit 200 | grep -q "kernel-${VER}-r"; then
-            echo "Kernel $VER already released; skipping build."
-            echo "build=false" >> "$GITHUB_OUTPUT"
+          # Keep only versions we haven't released yet, so the daily cron is a
+          # no-op once everything current is built. Each major is independent:
+          # a new 7.x doesn't stop 6.x from continuing to get patch builds.
+          TO_BUILD=()
+          for v in $CANDIDATES; do
+            if gh release list --repo "$GITHUB_REPOSITORY" --limit 200 | grep -q "kernel-${v}-r"; then
+              echo "kernel $v already released; skipping"
+            else
+              echo "kernel $v queued for build"
+              TO_BUILD+=("$v")
+            fi
+          done
+          if [ ${#TO_BUILD[@]} -gt 0 ]; then
+            JSON=$(printf '%s\n' "${TO_BUILD[@]}" | jq -R . | jq -sc .)
           else
-            echo "build=true" >> "$GITHUB_OUTPUT"
+            JSON="[]"
           fi
+          echo "Versions to build: $JSON"
+          echo "versions=$JSON" >> "$GITHUB_OUTPUT"
 
   kernel:
     needs: resolve
-    if: needs.resolve.outputs.build == 'true'
+    if: needs.resolve.outputs.versions != '[]'
     runs-on: ubuntu-latest
-    env:
-      KERNEL_VERSION: ${{ needs.resolve.outputs.version }}
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            goarch: amd64
-            cross_compile: ""
-            fc_arch: x86_64
-          - arch: aarch64
-            goarch: arm64
-            cross_compile: "aarch64-linux-gnu-"
-            fc_arch: aarch64
+        version: ${{ fromJSON(needs.resolve.outputs.versions) }}
+        arch:
+          - { name: x86_64,  goarch: amd64, cross_compile: "",                    fc_arch: x86_64 }
+          - { name: aarch64, goarch: arm64, cross_compile: "aarch64-linux-gnu-",  fc_arch: aarch64 }
+    env:
+      KERNEL_VERSION: ${{ matrix.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +79,7 @@ jobs:
 
       - name: Download Firecracker kernel source + config
         env:
-          FC_ARCH: ${{ matrix.fc_arch }}
+          FC_ARCH: ${{ matrix.arch.fc_arch }}
         run: |
           set -euo pipefail
           # Fetch the Firecracker CI config for this exact kernel version.
@@ -173,23 +176,23 @@ jobs:
 
       - name: Build kernel
         env:
-          CROSS_COMPILE: ${{ matrix.cross_compile }}
-          ARCH: ${{ matrix.arch == 'aarch64' && 'arm64' || 'x86_64' }}
+          CROSS_COMPILE: ${{ matrix.arch.cross_compile }}
+          ARCH: ${{ matrix.arch.name == 'aarch64' && 'arm64' || 'x86_64' }}
         run: |
           set -euo pipefail
           cd linux
           # Resolve any new symbols introduced by our config additions.
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
-          # Build just the compressed kernel image (no modules — Firecracker
-          # doesn't support loadable modules and the rootfs has no /lib/modules).
+          # Build just the kernel image (no modules — Firecracker doesn't support
+          # loadable modules and the rootfs has no /lib/modules).
           JOBS="$(nproc)"
           if [ "$ARCH" = "x86_64" ]; then
             # Firecracker requires an uncompressed ELF vmlinux, not bzImage.
             make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" vmlinux
-            cp vmlinux "../k3s-kernel-${KERNEL_VERSION}-${{ matrix.goarch }}"
+            cp vmlinux "../k3s-kernel-${KERNEL_VERSION}-${{ matrix.arch.goarch }}"
           else
             make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" Image
-            cp arch/arm64/boot/Image "../k3s-kernel-${KERNEL_VERSION}-${{ matrix.goarch }}"
+            cp arch/arm64/boot/Image "../k3s-kernel-${KERNEL_VERSION}-${{ matrix.arch.goarch }}"
           fi
 
       - name: Verify netfilter options are present
@@ -209,26 +212,37 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ matrix.goarch }}
-          path: k3s-kernel-${{ needs.resolve.outputs.version }}-${{ matrix.goarch }}
+          name: kernel-${{ matrix.version }}-${{ matrix.arch.goarch }}
+          path: k3s-kernel-${{ matrix.version }}-${{ matrix.arch.goarch }}
 
   release:
     needs: [resolve, kernel]
-    if: needs.resolve.outputs.build == 'true'
+    # always(): release each version whose build succeeded, even if a different
+    # version's build failed — a broken new major must not block 6.x patches.
+    if: always() && needs.resolve.outputs.versions != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.resolve.outputs.versions) }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: kernel-${{ matrix.version }}-*
           merge-multiple: true
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KERNEL_VERSION: ${{ needs.resolve.outputs.version }}
+          KERNEL_VERSION: ${{ matrix.version }}
         run: |
           set -euo pipefail
+          if ! ls artifacts/* >/dev/null 2>&1; then
+            echo "No artifacts for kernel ${KERNEL_VERSION} (build failed); skipping release."
+            exit 0
+          fi
           TAG="kernel-${KERNEL_VERSION}-r${{ github.run_number }}"
           printf '%s\n' \
             "Linux ${KERNEL_VERSION} kernel with Kubernetes networking extensions." \

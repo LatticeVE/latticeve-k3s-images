@@ -10,7 +10,7 @@
 # Output (one per line, suitable for `source`-ing or eval):
 #   K3S_VERSION=v1.31.5+k3s1
 #   ALPINE_VERSION=3.21.7
-#   FC_KERNEL_VERSION=6.1.174
+#   FC_KERNEL_VERSIONS=6.1.174 7.0.5   (latest patch of each supported major)
 #
 # Requires: curl, grep, sed, awk, paste — all POSIX-compatible (works with BSD
 # tools on macOS as well as GNU on Linux/CI). No jq dependency.
@@ -74,13 +74,17 @@ alpine_version() {
     echo "$ver"
 }
 
-# --- Firecracker guest kernel: newest version with a published FC CI config --
+# --- Firecracker guest kernels: latest patch of each supported major ---------
 # Firecracker only boots kernels it ships a build config for (in its CI S3
 # bucket). Track that set rather than kernel.org so we (a) never build a kernel
-# Firecracker can't run, and (b) automatically pick up a new line — including a
-# new major like 7.x — the moment Firecracker starts publishing configs for it.
-# No manual version bumping required.
-fc_kernel_version() {
+# Firecracker can't run, and (b) automatically pick up new lines — including a
+# new major like 7.x — the moment Firecracker publishes configs for them.
+#
+# fc_kernel_versions prints the latest patch of EACH major >= min_major, one per
+# line (ascending), so an established line (6.x) keeps getting patched even after
+# a newer major appears — operators move clusters to the new major deliberately.
+# fc_kernel_version prints just the highest, for callers wanting a single value.
+fc_kernel_versions() {
     local arch="${1:-x86_64}"
     local base="https://s3.amazonaws.com/spec.ccfc.min"
     # Minimum supported kernel major. Firecracker still ships 5.10 configs, but
@@ -92,11 +96,11 @@ fc_kernel_version() {
         | grep -o '<Prefix>firecracker-ci/[0-9]\{8\}-[^<]*</Prefix>' \
         | sed 's|<Prefix>||;s|</Prefix>||' | sort -r)
     if [ -z "$dirs" ]; then
-        echo "fc_kernel_version: no Firecracker CI build dirs found" >&2
+        echo "fc_kernel_versions: no Firecracker CI build dirs found" >&2
         return 1
     fi
-    # Walk newest-first; return the highest kernel version (proper version sort)
-    # that has a vmlinux config for this arch, ignoring majors below min_major.
+    # Walk newest-first; from the first dir with configs for this arch, keep the
+    # highest patch of each major >= min_major.
     for d in $dirs; do
         vers=$(curl -sSL "${base}/?list-type=2&prefix=${d}${arch}/vmlinux-" \
             | grep -oE 'vmlinux-[0-9]+(\.[0-9]+)+\.config' \
@@ -104,13 +108,16 @@ fc_kernel_version() {
             | awk -F. -v m="$min_major" '$1 >= m' \
             | sort -V)
         if [ -n "$vers" ]; then
-            echo "$vers" | tail -1
+            # Input is ascending, so the last value seen per major is its latest.
+            echo "$vers" | awk -F. '{ latest[$1]=$0 } END { for (k in latest) print latest[k] }' | sort -V
             return 0
         fi
     done
-    echo "fc_kernel_version: no vmlinux config found for arch $arch (major >= $min_major)" >&2
+    echo "fc_kernel_versions: no vmlinux config found for arch $arch (major >= $min_major)" >&2
     return 1
 }
+
+fc_kernel_version() { fc_kernel_versions "${1:-x86_64}" | tail -1; }
 
 # Allow sourcing this file (e.g. `source latest-versions.sh; alpine_version`)
 # to call individual functions without running the full report.
@@ -118,12 +125,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     set +e
     K3S_VERSION="$(k3s_version)"; k3s_rc=$?
     ALPINE_VERSION="$(alpine_version)"; alpine_rc=$?
-    FC_KERNEL_VERSION="$(fc_kernel_version x86_64)"; kernel_rc=$?
+    FC_KERNEL_VERSIONS="$(fc_kernel_versions x86_64)"; kernel_rc=$?
+    FC_KERNEL_VERSIONS="$(echo "$FC_KERNEL_VERSIONS" | paste -sd' ' -)"
     set -e
 
     echo "K3S_VERSION=$K3S_VERSION"
     echo "ALPINE_VERSION=$ALPINE_VERSION"
-    echo "FC_KERNEL_VERSION=$FC_KERNEL_VERSION"
+    echo "FC_KERNEL_VERSIONS=$FC_KERNEL_VERSIONS"
 
     if [ "$k3s_rc" != 0 ] || [ "$alpine_rc" != 0 ] || [ "$kernel_rc" != 0 ]; then
         exit 1
