@@ -53,9 +53,9 @@ fi
 make ARCH="$KARCH" olddefconfig
 make ARCH="$KARCH" -j"$(nproc)" vmlinux
 
-OUT="../vmlinux-${KERNEL_VERSION}-${GOARCH}"
+OUT="${WORK}/vmlinux-${KERNEL_VERSION}-${GOARCH}"
 cp vmlinux "$OUT"
-cd ..
+cd "$WORK"
 echo "=== built ==="; ls -la "$OUT"
 echo "kernel_version=$KERNEL_VERSION" > "${OUT}.meta"
 echo "arch=$GOARCH" >> "${OUT}.meta"
