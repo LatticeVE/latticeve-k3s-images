@@ -74,8 +74,11 @@ auto eth0
 iface eth0 inet dhcp
 EOF
 
-# The k3s bootstrap OpenRC service (kept as a repo file, not inlined).
+# OpenRC services (kept as repo files, not inlined): k3s-bootstrap resolves the
+# per-node MMDS config; k3s is the supervised service that runs the resolved
+# command and respawns on crash.
 install -m0755 "$SCRIPT_DIR/k3s-bootstrap" "$R/etc/init.d/k3s-bootstrap"
+install -m0755 "$SCRIPT_DIR/k3s.init" "$R/etc/init.d/k3s"
 
 # cgroups v2 unified (k3s requires a sane cgroup mount) + drop ttyN gettys
 # (Firecracker only has ttyS0) so the console doesn't flood.
@@ -86,14 +89,18 @@ chroot "$R" /bin/sh -c '
   set -e
   # ca-certificates provides the trust bundle + update-ca-certificates so the
   # k3s-bootstrap service can verify TLS on the kubeconfig callback against the
-  # controller's published serving cert.
-  apk add --no-cache openrc iproute2 e2fsprogs ca-certificates >/dev/null 2>&1
+  # controller's published serving cert. dropbear is a tiny SSH server, started
+  # by k3s-bootstrap only when the cluster supplies SSH authorized keys (key-only).
+  apk add --no-cache openrc iproute2 e2fsprogs ca-certificates dropbear >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
   # -> k3s fatals "unhandled cgroup mode". Populate them explicitly.
   for s in devfs dmesg sysfs cgroups hwdrivers; do rc-update add $s sysinit; done
   for s in procfs bootmisc modules hostname sysctl seedrng localmount; do rc-update add $s boot; done
   rc-update add networking boot
   rc-update add k3s-bootstrap default
+  rc-update add k3s default
+  # Passwordless root by default. A cluster can set a root password (root_pw_hash)
+  # and/or SSH keys (ssh_keys) via MMDS, applied at boot by k3s-bootstrap.
   passwd -d root
 ' 2>&1 | tail -3
 

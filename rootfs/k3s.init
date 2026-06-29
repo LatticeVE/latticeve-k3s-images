@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+# Supervised k3s. k3s-bootstrap (oneshot) resolves the per-node MMDS config and
+# writes the resolved server/agent command to /run/k3s/run; this service runs
+# that wrapper under supervise-daemon, so if k3s crashes it is automatically
+# respawned (the old setup backgrounded k3s with `&` and never restarted it).
+description="k3s (supervised)"
+
+supervisor=supervise-daemon
+command=/run/k3s/run
+respawn_delay=5
+respawn_max=0
+output_log=/var/log/k3s.log
+error_log=/var/log/k3s.log
+
+depend() { need k3s-bootstrap net; }
