@@ -114,7 +114,7 @@ chroot "$R" /bin/sh -c '
   # controller serving cert (no apostrophes here: this whole block is a single-
   # quoted sh -c argument, so one would close the quote). dropbear is a tiny SSH
   # server, started by k3s-bootstrap only when the cluster supplies SSH keys.
-  apk add --no-cache openrc iproute2 e2fsprogs ca-certificates dropbear >/dev/null 2>&1
+  apk add --no-cache openrc iproute2 e2fsprogs e2fsprogs-extra ca-certificates dropbear >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
   # -> k3s fatals "unhandled cgroup mode". Populate the minimum services
   # Firecracker needs, and remove module/hw probing services that only produce
