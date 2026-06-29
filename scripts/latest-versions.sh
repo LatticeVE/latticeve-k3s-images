@@ -9,10 +9,8 @@
 #   ALPINE_VERSION=3.21.7
 #   KERNEL_VERSION=6.1.155
 #
-# Requires: curl, grep -P (GNU grep). No jq dependency — everything is parsed
-# with grep/sed so this runs on a bare GitHub Actions ubuntu-latest runner.
-# macOS ships BSD grep (no -P) — install GNU grep (`brew install grep`, as
-# `ggrep`) or run this inside the build container/CI if testing locally.
+# Requires: curl, grep, sed — all POSIX-compatible (works with BSD grep on
+# macOS as well as GNU grep on Linux/CI). No jq dependency.
 #
 # Set GITHUB_TOKEN to avoid the unauthenticated GitHub API rate limit
 # (60 req/hr per IP — easy to hit on a shared runner/sandbox IP).
@@ -66,10 +64,13 @@ alpine_version() {
 # (plus a debug/ subfolder with debug-symbol variants, which we exclude).
 # We walk: newest dated build dir -> vmlinux-* filenames directly under
 # <build>/x86_64/, skipping the debug/ subfolder.
+# Portable across BSD and GNU grep: extract tag content via grep -Eo (POSIX
+# ERE, no lookaround needed) then strip the tags with sed.
 s3_common_prefixes() {
     # $1 = prefix, $2 = delimiter (default "/")
     curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/?list-type=2&prefix=$1&delimiter=${2:-/}" \
-        | grep -oP '(?<=<Prefix>)[^<]+'
+        | grep -Eo '<Prefix>[^<]*</Prefix>' \
+        | sed -E 's#</?Prefix>##g'
 }
 
 kernel_version() {
@@ -78,9 +79,11 @@ kernel_version() {
     [ -n "$fc_build" ] || { echo "could not find a dated firecracker-ci build" >&2; return 1; }
 
     curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/?list-type=2&prefix=${fc_build}x86_64/" \
-        | grep -oP '(?<=<Key>)[^<]+' \
+        | grep -Eo '<Key>[^<]*</Key>' \
+        | sed -E 's#</?Key>##g' \
         | grep -v '/debug/' \
-        | grep -oP 'vmlinux-\K[0-9]+\.[0-9]+\.[0-9]+(?=$)' \
+        | grep -E 'vmlinux-[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sed -E 's#.*vmlinux-([0-9]+\.[0-9]+\.[0-9]+)$#\1#' \
         | sort -V | tail -1
 }
 
