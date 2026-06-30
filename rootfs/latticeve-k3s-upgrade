@@ -17,6 +17,11 @@ case "$version" in
     *) version="v$version" ;;
 esac
 
+# LatticeVE rootfs builds append a build revision to the image version, e.g.
+# v1.36.2+k3s1-r23. The upstream k3s release tag is only v1.36.2+k3s1, so strip
+# the LatticeVE-only suffix before constructing the GitHub download URL.
+k3s_release_version="$(printf '%s' "$version" | sed 's/-r[0-9][0-9]*$//')"
+
 arch="$(uname -m)"
 case "$arch" in
     x86_64) asset="k3s" ;;
@@ -24,13 +29,45 @@ case "$arch" in
     *) echo "unsupported architecture: $arch" >&2; exit 2 ;;
 esac
 
-encoded_version="$(printf '%s' "$version" | sed 's/+/%2B/g')"
+encoded_version="$(printf '%s' "$k3s_release_version" | sed 's/+/%2B/g')"
 url="https://github.com/k3s-io/k3s/releases/download/${encoded_version}/${asset}"
 tmp="/usr/local/bin/k3s.${version}.$$"
 backup="/usr/local/bin/k3s.previous"
+upgrade_url="$(wget -qO- http://169.254.169.254/upgrade_url 2>/dev/null | tr -d '"' || true)"
+upgrade_token="$(wget -qO- http://169.254.169.254/upgrade_token 2>/dev/null | tr -d '"' || true)"
 
-echo "downloading k3s ${version} (${asset})"
-wget -qO "$tmp" "$url"
+download_k3s() {
+    download_url="$1"
+    download_token="$2"
+    tls_arg="$3"
+    attempts="${K3S_UPGRADE_DOWNLOAD_ATTEMPTS:-3}"
+    timeout="${K3S_UPGRADE_DOWNLOAD_TIMEOUT:-30}"
+    i=1
+    while [ "$i" -le "$attempts" ]; do
+        rm -f "$tmp"
+        if [ -n "$download_token" ]; then
+            if wget -q -T "$timeout" $tls_arg --header="X-Upgrade-Token: $download_token" -O "$tmp" "$download_url"; then
+                return 0
+            fi
+        else
+            if wget -q -T "$timeout" $tls_arg -O "$tmp" "$download_url"; then
+                return 0
+            fi
+        fi
+        echo "download attempt $i/$attempts failed"
+        i=$((i+1))
+        sleep 2
+    done
+    return 1
+}
+
+if [ -n "$upgrade_url" ]; then
+    echo "downloading k3s ${k3s_release_version} from LatticeVE controller (${asset}; requested ${version})"
+    download_k3s "$upgrade_url" "$upgrade_token" "--no-check-certificate"
+else
+    echo "downloading k3s ${k3s_release_version} from GitHub (${asset}; requested ${version})"
+    download_k3s "$url" "" ""
+fi
 chmod 0755 "$tmp"
 
 "$tmp" --version >/tmp/latticeve-k3s-upgrade.version 2>&1 || {

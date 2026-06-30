@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+description="LatticeVE k3s kubeconfig callback"
+
+command=/usr/local/bin/latticeve-k3s-callback
+pidfile=/run/latticeve-k3s-callback.pid
+
+depend() {
+	need k3s net
+}
+
+start() {
+	ebegin "Starting LatticeVE k3s kubeconfig callback"
+	start-stop-daemon --start --background --make-pidfile --pidfile "$pidfile" --exec "$command"
+	eend $?
+}
+
+stop() {
+	ebegin "Stopping LatticeVE k3s kubeconfig callback"
+	start-stop-daemon --stop --pidfile "$pidfile"
+	eend $?
+}

@@ -50,6 +50,7 @@ upload_snapshot_if_requested() {
         --post-file="$snap_file" -O- "$snapshot_url" >/dev/null 2>&1; then
         echo "$snapshot_nonce" > "$last_snapshot_nonce_file"
         echo "$(date -Iseconds) etcd snapshot uploaded: file=$snap_file" >> "$log"
+        rm -f "$snap_file"
         return 0
     fi
     echo "$(date -Iseconds) etcd snapshot upload failed: file=$snap_file" >> "$log"

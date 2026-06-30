@@ -1,0 +1,42 @@
+#!/bin/sh
+# Tiny log capper for the LatticeVE Firecracker k3s guest.
+#
+# These guests intentionally run on small ext4 root filesystems. A full logrotate
+# stack is more machinery than we need, but append-only k3s/OpenRC logs should
+# still be bounded so a noisy service cannot fill the disk.
+
+set -eu
+
+MAX_BYTES="${LATTICEVE_LOGCAP_MAX_BYTES:-1048576}"
+KEEP_BYTES="${LATTICEVE_LOGCAP_KEEP_BYTES:-262144}"
+INTERVAL_SECONDS="${LATTICEVE_LOGCAP_INTERVAL_SECONDS:-60}"
+
+logs="
+/var/log/k3s.log
+/var/log/latticeve-k3s-upgrade.log
+/var/log/latticeve-k3s-callback.log
+"
+
+cap_log() {
+	file="$1"
+	[ -f "$file" ] || return 0
+
+	size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+	case "$size" in
+		''|*[!0-9]*) return 0 ;;
+	esac
+	[ "$size" -gt "$MAX_BYTES" ] || return 0
+
+	tmp="${file}.logcap.$$"
+	if tail -c "$KEEP_BYTES" "$file" > "$tmp" 2>/dev/null; then
+		cat "$tmp" > "$file"
+	fi
+	rm -f "$tmp"
+}
+
+while :; do
+	for log in $logs; do
+		cap_log "$log"
+	done
+	sleep "$INTERVAL_SECONDS"
+done

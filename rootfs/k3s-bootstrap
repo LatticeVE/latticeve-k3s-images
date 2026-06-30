@@ -13,7 +13,6 @@
 #   init           "1" on the first control-plane node (embedded-etcd cluster-init)
 #   cni            CNI name ("flannel" default → host-gw; anything else → none)
 #   callback       controller URL the first server POSTs its kubeconfig to
-#   callback_ca    base64 controller serving cert, to verify the callback's TLS
 #   node_name      k8s node name (hostname)
 #   tls_san        space-separated extra TLS SANs (LB VIP, public IP) for the cert
 #   root_pw_hash   crypt(3) root password hash (optional; default passwordless)
@@ -22,6 +21,30 @@ description="LatticeVE k3s bootstrap (Firecracker MMDS)"
 depend() { need net; before k3s; }
 
 mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
+
+shell_quote() {
+    printf "'"
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
+}
+
+valid_node_name() {
+    [ -z "$1" ] || printf '%s' "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'
+}
+
+valid_metadata_value() {
+    # MMDS values are controller-owned, but reject newlines/control chars so they
+    # cannot corrupt the generated /run/k3s/run shell wrapper.
+    [ -z "$1" ] || ! printf '%s' "$1" | grep -q '[[:cntrl:]]'
+}
+
+valid_url() {
+    [ -n "$1" ] && valid_metadata_value "$1" && printf '%s' "$1" | grep -Eq '^https://[^[:space:]]+$'
+}
+
+valid_san() {
+    [ -n "$1" ] && printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.:-]+$'
+}
 
 # apply_node_access sets an optional root password and installs optional SSH
 # authorized keys (starting dropbear, key-only, when keys are present). Both
@@ -70,9 +93,24 @@ start() {
         sleep 2; i=$((i+1))
     done
     [ -z "$role" ] && { eend 1 "MMDS role unavailable"; return 1; }
+    case "$role" in
+        server|agent) ;;
+        *) eend 1 "invalid MMDS role: $role"; return 1 ;;
+    esac
 
-    local token=$(mmds token) cb_token=$(mmds callback_token) server=$(mmds server) cni=$(mmds cni) cb=$(mmds callback)
+    local token=$(mmds token) server=$(mmds server) cni=$(mmds cni)
     local nn=$(mmds node_name) init=$(mmds init) tlssan=$(mmds tls_san)
+    if [ -z "$token" ] || ! valid_metadata_value "$token"; then eend 1 "invalid or missing MMDS token"; return 1; fi
+    if ! valid_node_name "$nn"; then eend 1 "invalid MMDS node_name: $nn"; return 1; fi
+    if [ -n "$cni" ] && ! printf '%s' "$cni" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+        eend 1 "invalid MMDS cni: $cni"; return 1
+    fi
+    if [ "$role" = "agent" ] && ! valid_url "$server"; then
+        eend 1 "invalid or missing MMDS server for agent"; return 1
+    fi
+    if [ "$role" = "server" ] && [ -z "$init" ]; then
+        if ! valid_url "$server"; then eend 1 "invalid or missing MMDS server for joining control-plane"; return 1; fi
+    fi
 
     # Hostname → meaningful k8s node name (default is "localhost" otherwise).
     if [ -n "$nn" ]; then hostname "$nn"; echo "$nn" > /etc/hostname; fi
@@ -91,8 +129,15 @@ start() {
     local fb="--flannel-backend=host-gw"
     [ -n "$cni" ] && [ "$cni" != "flannel" ] && fb="--flannel-backend=none --disable-network-policy"
 
-    local nnarg=""; [ -n "$nn" ] && nnarg="--node-name $nn"
-    local sanargs=""; for s in $tlssan; do sanargs="$sanargs --tls-san $s"; done
+    local nnarg=""; [ -n "$nn" ] && nnarg="--node-name $(shell_quote "$nn")"
+    local sanargs=""
+    for s in $tlssan; do
+        if ! valid_san "$s"; then eend 1 "invalid MMDS tls_san: $s"; return 1; fi
+        sanargs="$sanargs --tls-san $(shell_quote "$s")"
+    done
+    local cp_labels="--node-label node-role.kubernetes.io/control-plane=true --node-label node-role.kubernetes.io/etcd=true"
+    local worker_labels="--node-label node-role.kubernetes.io/worker=true"
+    local token_arg=$(shell_quote "$token")
 
     # Resolve the k3s command into the wrapper the supervised `k3s` service runs.
     # Lives on tmpfs (/run) and carries the join token, so keep it root-only.
@@ -100,38 +145,17 @@ start() {
         # First server initialises embedded etcd; additional servers join it.
         local mode=""
         if [ -n "$init" ]; then mode="--cluster-init"
-        elif [ -n "$server" ]; then mode="--server $server"
+        elif [ -n "$server" ]; then mode="--server $(shell_quote "$server")"
         fi
         cat > /run/k3s/run <<EOF
 #!/bin/sh
-exec /usr/local/bin/k3s server $mode --token "$token" --write-kubeconfig-mode 644 $fb $nnarg $sanargs
+exec /usr/local/bin/k3s server $mode --token $token_arg --write-kubeconfig-mode 644 $fb $nnarg $sanargs $cp_labels --disable=traefik --disable=local-path --disable=metrics-server --disable=servicelb
 EOF
-        # Phone the kubeconfig home (controller patches the endpoint + stores it).
-        # The kubeconfig carries cluster-admin creds, so verify the callback's TLS
-        # against the controller's published serving cert (callback_ca); fall back
-        # to --no-check-certificate only if no cert was published (older controller).
-        if [ -n "$cb" ]; then
-          local wget_tls="--no-check-certificate"
-          local cca=$(mmds callback_ca)
-          if [ -n "$cca" ]; then
-            mkdir -p /usr/local/share/ca-certificates
-            if echo "$cca" | base64 -d > /usr/local/share/ca-certificates/lattice-controller.crt 2>/dev/null \
-               && update-ca-certificates >/dev/null 2>&1; then
-              wget_tls=""
-            fi
-          fi
-          ( for j in $(seq 1 360); do
-              if [ -f /etc/rancher/k3s/k3s.yaml ]; then
-                wget -q $wget_tls --header="X-Cluster-Token: $cb_token" \
-                  --post-file=/etc/rancher/k3s/k3s.yaml -O- "$cb" >/dev/null 2>&1 && break
-              fi
-              sleep 5
-            done ) &
-        fi
     else
+        local server_arg=$(shell_quote "$server")
         cat > /run/k3s/run <<EOF
 #!/bin/sh
-exec /usr/local/bin/k3s agent --token "$token" --server "$server" $nnarg
+exec /usr/local/bin/k3s agent --token $token_arg --server $server_arg $nnarg $worker_labels
 EOF
     fi
     chmod 700 /run/k3s/run

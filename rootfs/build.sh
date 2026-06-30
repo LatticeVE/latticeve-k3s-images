@@ -44,10 +44,15 @@ BUILD_ID="${BUILD_ID:-}"
 # feed reads the full "version + build id" straight off the artifact name.
 OUT="${K3S_VERSION}${BUILD_ID:+-$BUILD_ID}-${GOARCH}.ext4"
 
+CACHE_DIR="${CACHE_DIR:-$WORK/cache}"
+mkdir -p "$CACHE_DIR"
+MINI_TARBALL="$CACHE_DIR/alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz"
+K3S_BIN="$CACHE_DIR/k3s-${K3S_VERSION}-${GOARCH}"
+
 # --- fetch inputs (reuse local copies if present) ---------------------------
-if [ ! -f mini.tar.gz ]; then
+if [ ! -f "$MINI_TARBALL" ]; then
     echo "downloading alpine minirootfs $ALPINE_VERSION"
-    wget -qO mini.tar.gz \
+    wget -qO "$MINI_TARBALL" \
         "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/releases/$ARCH/alpine-minirootfs-$ALPINE_VERSION-$ARCH.tar.gz"
 fi
 # k3s names its release asset per-arch: "k3s" for amd64, "k3s-arm64" for arm64.
@@ -55,16 +60,16 @@ case "$GOARCH" in
   amd64) K3S_ASSET="k3s" ;;
   arm64) K3S_ASSET="k3s-arm64" ;;
 esac
-if [ ! -f k3s ]; then
+if [ ! -f "$K3S_BIN" ]; then
     echo "downloading k3s $K3S_VERSION ($K3S_ASSET)"
-    wget -qO k3s "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/$K3S_ASSET"
-    chmod +x k3s
+    wget -qO "$K3S_BIN" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/$K3S_ASSET"
+    chmod +x "$K3S_BIN"
 fi
 
 # --- assemble rootfs --------------------------------------------------------
 rm -rf "$R"; mkdir -p "$R"
-tar -xzf mini.tar.gz -C "$R"
-install -m0755 k3s "$R/usr/local/bin/k3s"
+tar -xzf "$MINI_TARBALL" -C "$R"
+install -m0755 "$K3S_BIN" "$R/usr/local/bin/k3s"
 mkdir -p "$R/etc/init.d" "$R/etc/network"
 
 echo "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main" > "$R/etc/apk/repositories"
@@ -83,9 +88,13 @@ EOF
 # command and respawns on crash.
 install -m0755 "$SCRIPT_DIR/k3s-bootstrap" "$R/etc/init.d/k3s-bootstrap"
 install -m0755 "$SCRIPT_DIR/k3s.init" "$R/etc/init.d/k3s"
+GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags="-s -w" -o "$R/usr/local/bin/latticeve-k3s-callback" "$SCRIPT_DIR/latticeve-k3s-callback.go"
+install -m0755 "$SCRIPT_DIR/latticeve-k3s-callback.init" "$R/etc/init.d/latticeve-k3s-callback"
 install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade" "$R/usr/local/bin/latticeve-k3s-upgrade"
 install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade-watch" "$R/usr/local/bin/latticeve-k3s-upgrade-watch"
 install -m0755 "$SCRIPT_DIR/latticeve-k3s-upgrade-watch.init" "$R/etc/init.d/latticeve-k3s-upgrade-watch"
+install -m0755 "$SCRIPT_DIR/latticeve-logcap" "$R/usr/local/bin/latticeve-logcap"
+install -m0755 "$SCRIPT_DIR/latticeve-logcap.init" "$R/etc/init.d/latticeve-logcap"
 
 # cgroups v2 unified (k3s requires a sane cgroup mount) + drop ttyN gettys
 # (Firecracker only has ttyS0) so the console doesn't flood.
@@ -109,11 +118,8 @@ EOF
 
 chroot "$R" /bin/sh -c '
   set -e
-  # ca-certificates provides the trust bundle + update-ca-certificates so the
-  # k3s-bootstrap service can verify TLS on the kubeconfig callback against the
-  # controller serving cert (no apostrophes here: this whole block is a single-
-  # quoted sh -c argument, so one would close the quote). dropbear is a tiny SSH
-  # server, started by k3s-bootstrap only when the cluster supplies SSH keys.
+  # dropbear is a tiny SSH server, started by k3s-bootstrap only when the cluster
+  # supplies SSH keys.
   apk add --no-cache openrc iproute2 e2fsprogs-extra cfdisk ca-certificates dropbear >/dev/null 2>&1
   # A bare minirootfs leaves sysinit/boot runlevels empty -> no cgroup/sysfs mount
   # -> k3s fatals "unhandled cgroup mode". Populate the minimum services
@@ -135,8 +141,10 @@ chroot "$R" /bin/sh -c '
   for s in procfs bootmisc hostname sysctl seedrng localmount; do rc-update add $s boot; done
   rc-update add networking boot
   rc-update add local default
+  rc-update add latticeve-logcap default
   rc-update add k3s-bootstrap default
   rc-update add k3s default
+  rc-update add latticeve-k3s-callback default
   rc-update add latticeve-k3s-upgrade-watch default
   # Passwordless root by default. A cluster can set a root password (root_pw_hash)
   # and/or SSH keys (ssh_keys) via MMDS, applied at boot by k3s-bootstrap.

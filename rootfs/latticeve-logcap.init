@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+description="LatticeVE guest log capper"
+
+command=/usr/local/bin/latticeve-logcap
+command_background=true
+pidfile=/run/latticeve-logcap.pid
+output_log=/dev/null
+error_log=/dev/null
+
+depend() {
+	need localmount
+	before k3s
+}
