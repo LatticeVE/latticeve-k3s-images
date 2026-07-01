@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
 # LatticeVE k3s bootstrap (OpenRC, oneshot). Reads per-node configuration from
-# the Firecracker Metadata Service (MMDS, V1 @ 169.254.169.254) which the
+# the Firecracker Metadata Service (MMDS, V2 @ 169.254.169.254) which the
 # controller publishes pre/post-boot, prepares the node, and writes the resolved
 # k3s command to /run/k3s/run. The separate, supervised `k3s` service then runs
 # that wrapper (respawning k3s if it crashes) — see the k3s init script.
@@ -20,7 +20,35 @@
 description="LatticeVE k3s bootstrap (Firecracker MMDS)"
 depend() { need net; before k3s; }
 
-mmds() { wget -qO- "http://169.254.169.254/$1" 2>/dev/null | tr -d '"'; }
+mmds_token=""
+mmds_token_expires=0
+refresh_mmds_token() {
+    local now=$(date +%s 2>/dev/null || echo 0)
+    if [ -n "$mmds_token" ] && [ "$now" -lt "$mmds_token_expires" ]; then
+        return 0
+    fi
+    local token
+    token=$(curl -fsS -X PUT \
+        -H "X-metadata-token-ttl-seconds: 21600" \
+        "http://169.254.169.254/latest/api/token" 2>/dev/null || true)
+    if [ -n "$token" ]; then
+        mmds_token="$token"
+        mmds_token_expires=$((now + 21000))
+        return 0
+    fi
+    return 1
+}
+
+mmds() {
+    local key="$1"
+    refresh_mmds_token || true
+    if [ -n "$mmds_token" ]; then
+        curl -fsS -H "X-metadata-token: $mmds_token" "http://169.254.169.254/$key" 2>/dev/null | tr -d '"'
+    else
+        # Backward-compatible fallback for older hosts still configured with V1.
+        wget -qO- "http://169.254.169.254/$key" 2>/dev/null | tr -d '"'
+    fi
+}
 
 shell_quote() {
     printf "'"

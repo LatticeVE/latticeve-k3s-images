@@ -5,7 +5,8 @@ needs:
 
 - `rootfs/` — a reproducible Alpine + k3s ext4 rootfs (`build.sh`). Boots via
   the `k3s-bootstrap` OpenRC service, which reads its role/token/server/etc.
-  from Firecracker MMDS at boot.
+  from Firecracker MMDSv2 at boot. The guest helpers request an MMDS session
+  token before reading metadata, with a V1 fallback for older LatticeVE hosts.
 
 There's no guest kernel build here — a Firecracker kernel isn't actually
 coupled to a specific rootfs (one kernel boots many rootfs versions), so
@@ -29,7 +30,7 @@ it falls back to the matching upstream k3s GitHub release asset. It stops the
 OpenRC `k3s` service, atomically swaps `/usr/local/bin/k3s`, restarts the
 service, and rolls the binary back if the service fails to start.
 
-Upgrades are triggered through Firecracker MMDS, not SSH or qemu-guest-agent:
+Upgrades are triggered through Firecracker MMDSv2, not SSH or qemu-guest-agent:
 the Go `latticeve-k3s-upgrade-watch` OpenRC service polls `upgrade_version` and
 `upgrade_nonce`, then runs the upgrade hook exactly once per nonce. Logs go to
 `/var/log/latticeve-k3s-upgrade.log` and are capped so a noisy or failed upgrade

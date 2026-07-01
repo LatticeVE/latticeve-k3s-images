@@ -33,8 +33,38 @@ encoded_version="$(printf '%s' "$k3s_release_version" | sed 's/+/%2B/g')"
 url="https://github.com/k3s-io/k3s/releases/download/${encoded_version}/${asset}"
 tmp="/usr/local/bin/k3s.${version}.$$"
 backup="/usr/local/bin/k3s.previous"
-upgrade_url="$(wget -qO- http://169.254.169.254/upgrade_url 2>/dev/null | tr -d '"' || true)"
-upgrade_token="$(wget -qO- http://169.254.169.254/upgrade_token 2>/dev/null | tr -d '"' || true)"
+mmds_token=""
+mmds_token_expires=0
+
+refresh_mmds_token() {
+    now="$(date +%s 2>/dev/null || echo 0)"
+    if [ -n "$mmds_token" ] && [ "$now" -lt "$mmds_token_expires" ]; then
+        return 0
+    fi
+    token="$(curl -fsS -X PUT \
+        -H "X-metadata-token-ttl-seconds: 21600" \
+        "http://169.254.169.254/latest/api/token" 2>/dev/null || true)"
+    if [ -n "$token" ]; then
+        mmds_token="$token"
+        mmds_token_expires=$((now + 21000))
+        return 0
+    fi
+    return 1
+}
+
+mmds() {
+    key="$1"
+    refresh_mmds_token || true
+    if [ -n "$mmds_token" ]; then
+        curl -fsS -H "X-metadata-token: $mmds_token" "http://169.254.169.254/$key" 2>/dev/null | tr -d '"'
+    else
+        # Backward-compatible fallback for older hosts still configured with V1.
+        wget -qO- "http://169.254.169.254/$key" 2>/dev/null | tr -d '"'
+    fi
+}
+
+upgrade_url="$(mmds upgrade_url || true)"
+upgrade_token="$(mmds upgrade_token || true)"
 
 download_k3s() {
     download_url="$1"

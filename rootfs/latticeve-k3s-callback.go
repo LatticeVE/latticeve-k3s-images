@@ -21,6 +21,11 @@ const (
 	logKeepBytes   = 256 << 10
 )
 
+var (
+	mmdsToken        string
+	mmdsTokenExpires time.Time
+)
+
 func main() {
 	_ = os.MkdirAll("/var/log", 0755)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -105,6 +110,9 @@ func mmds(client *http.Client, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if token := fetchMMDSToken(client); token != "" {
+		req.Header.Set("X-metadata-token", token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -118,6 +126,37 @@ func mmds(client *http.Client, key string) (string, error) {
 		return "", err
 	}
 	return strings.Trim(strings.TrimSpace(string(b)), `"`), nil
+}
+
+func fetchMMDSToken(client *http.Client) string {
+	if mmdsToken != "" && time.Now().Before(mmdsTokenExpires) {
+		return mmdsToken
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, mmdsBase+"/latest/api/token", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("X-metadata-token-ttl-seconds", "21600")
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return ""
+	}
+	token := strings.TrimSpace(string(b))
+	if token != "" {
+		mmdsToken = token
+		mmdsTokenExpires = time.Now().Add(350 * time.Minute)
+	}
+	return token
 }
 
 func postKubeconfig(client *http.Client, callback, token string, kubeconfig []byte) error {
