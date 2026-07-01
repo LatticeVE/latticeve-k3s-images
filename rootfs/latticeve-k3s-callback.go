@@ -17,6 +17,8 @@ const (
 	mmdsBase       = "http://169.254.169.254"
 	kubeconfigPath = "/etc/rancher/k3s/k3s.yaml"
 	logPath        = "/var/log/latticeve-k3s-callback.log"
+	logMaxBytes    = 1 << 20
+	logKeepBytes   = 256 << 10
 )
 
 func main() {
@@ -26,7 +28,7 @@ func main() {
 		log.SetOutput(os.Stderr)
 	} else {
 		defer f.Close()
-		log.SetOutput(f)
+		log.SetOutput(&cappedLogWriter{f: f, path: logPath})
 	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("latticeve-k3s-callback started")
@@ -137,4 +139,34 @@ func postKubeconfig(client *http.Client, callback, token string, kubeconfig []by
 		return fmt.Errorf("controller returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+type cappedLogWriter struct {
+	f    *os.File
+	path string
+}
+
+func (w *cappedLogWriter) Write(p []byte) (int, error) {
+	capLogFile(w.path)
+	return w.f.Write(p)
+}
+
+func capLogFile(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= logMaxBytes {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if _, err := f.Seek(-logKeepBytes, io.SeekEnd); err != nil {
+		_, _ = f.Seek(0, io.SeekStart)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, logKeepBytes))
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0644)
 }

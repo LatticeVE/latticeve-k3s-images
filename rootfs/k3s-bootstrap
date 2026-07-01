@@ -135,8 +135,6 @@ start() {
         if ! valid_san "$s"; then eend 1 "invalid MMDS tls_san: $s"; return 1; fi
         sanargs="$sanargs --tls-san $(shell_quote "$s")"
     done
-    local cp_labels="--node-label node-role.kubernetes.io/control-plane=true --node-label node-role.kubernetes.io/etcd=true"
-    local worker_labels="--node-label node-role.kubernetes.io/worker=true"
     local token_arg=$(shell_quote "$token")
 
     # Resolve the k3s command into the wrapper the supervised `k3s` service runs.
@@ -149,13 +147,13 @@ start() {
         fi
         cat > /run/k3s/run <<EOF
 #!/bin/sh
-exec /usr/local/bin/k3s server $mode --token $token_arg --write-kubeconfig-mode 644 $fb $nnarg $sanargs $cp_labels --disable=traefik --disable=local-path --disable=metrics-server --disable=servicelb
+exec /usr/local/bin/k3s server $mode --token $token_arg --write-kubeconfig-mode 644 $fb $nnarg $sanargs --disable=traefik --disable=local-path --disable=metrics-server --disable=servicelb
 EOF
     else
         local server_arg=$(shell_quote "$server")
         cat > /run/k3s/run <<EOF
 #!/bin/sh
-exec /usr/local/bin/k3s agent --token $token_arg --server $server_arg $nnarg $worker_labels
+exec /usr/local/bin/k3s agent --token $token_arg --server $server_arg $nnarg
 EOF
     fi
     chmod 700 /run/k3s/run

@@ -22,20 +22,30 @@ Produces `<version>-<amd64|arm64>.ext4` (e.g. `v1.31.5+k3s1-amd64.ext4`),
 with a `.meta` sidecar recording the k3s/Alpine versions baked in.
 
 The image also installs `/usr/local/bin/latticeve-k3s-upgrade`, the guest-side
-hook LatticeVE calls during Kubernetes upgrades. The helper downloads the target
-k3s binary for the node architecture, stops the OpenRC `k3s` service, atomically
-swaps `/usr/local/bin/k3s`, restarts the service, and rolls the binary back if
-the service fails to start.
+hook LatticeVE uses during Kubernetes upgrades. The helper prefers the
+controller-served `upgrade_url`/`upgrade_token` MMDS values so upgrades use the
+k3s binary extracted from the imported target rootfs. If those keys are absent,
+it falls back to the matching upstream k3s GitHub release asset. It stops the
+OpenRC `k3s` service, atomically swaps `/usr/local/bin/k3s`, restarts the
+service, and rolls the binary back if the service fails to start.
 
 Upgrades are triggered through Firecracker MMDS, not SSH or qemu-guest-agent:
-the `latticeve-k3s-upgrade-watch` OpenRC service polls `upgrade_version` and
+the Go `latticeve-k3s-upgrade-watch` OpenRC service polls `upgrade_version` and
 `upgrade_nonce`, then runs the upgrade hook exactly once per nonce. Logs go to
-`/var/log/latticeve-k3s-upgrade.log`.
+`/var/log/latticeve-k3s-upgrade.log` and are capped so a noisy or failed upgrade
+cannot fill the root disk.
 
 Before a control-plane upgrade, the same watcher can receive `snapshot_url`,
-`snapshot_token`, and `snapshot_nonce` through MMDS. Server nodes create a k3s
-etcd snapshot, upload it to the controller, and only then the controller starts
-the rolling upgrade.
+`snapshot_token`, `snapshot_name`, `snapshot_reason`, and `snapshot_nonce`
+through MMDS. Server nodes create a k3s etcd snapshot, upload it to the
+controller, and only then the controller starts the rolling upgrade. Snapshot
+uploads are bounded by retry/timeout settings, and failed local snapshot files
+are removed so retries do not grow the guest disk indefinitely.
+
+Node role labels are controller-managed after the kubeconfig is available; the
+guest bootstrap only sets the k3s node name and join/server arguments.
+Duplicate kubeconfig callbacks are safe: recent LatticeVE controllers treat an
+already-stored kubeconfig as idempotent and return success without overwriting it.
 
 ## CI
 
